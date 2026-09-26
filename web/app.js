@@ -241,7 +241,11 @@ async function searchAddress(text) {
   try { places = await api('/api/geocode?q=' + encodeURIComponent(text)); }
   catch { $('#search-results').innerHTML = '<div class="empty">Address search is busy. Try again in a moment.</div>'; return; }
   if (!places.length) {
+<<<<<<< HEAD
     $('#search-results').innerHTML = '<div class="empty">Couldn’t find that in Miami-Dade. Try adding a street number, city or ZIP (e.g. “11200 SW 8 St, Miami”).</div>';
+=======
+    $('#search-results').innerHTML = '<div class="empty">Couldn’t find that in South Florida. Try adding a street number, city or ZIP (e.g. “11200 SW 8 St, Miami”).</div>';
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
     return;
   }
   if (places.length === 1) return useOrigin(places[0]);

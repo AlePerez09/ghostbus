@@ -9,7 +9,12 @@ CREATE TABLE IF NOT EXISTS routes (
     route_short_name TEXT,
     route_long_name  TEXT,
     route_type       INT,
+<<<<<<< HEAD
     route_color      TEXT
+=======
+    route_color      TEXT,
+    agency           TEXT DEFAULT 'mdt'
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 );
 
 CREATE TABLE IF NOT EXISTS stops (
@@ -25,7 +30,12 @@ CREATE TABLE IF NOT EXISTS trips (
     service_id   TEXT,
     direction_id INT,
     headsign     TEXT,
+<<<<<<< HEAD
     shape_id     TEXT
+=======
+    shape_id     TEXT,
+    agency       TEXT DEFAULT 'mdt'
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 );
 CREATE INDEX IF NOT EXISTS trips_route_idx ON trips (route_id, direction_id);
 
@@ -69,7 +79,12 @@ CREATE TABLE IF NOT EXISTS trip_windows (
     service_id TEXT,
     direction_id INT,
     start_s  INT,
+<<<<<<< HEAD
     end_s    INT
+=======
+    end_s    INT,
+    agency   TEXT DEFAULT 'mdt'
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 );
 
 -- Service IDs running on a given date, honoring calendar + calendar_dates exceptions.

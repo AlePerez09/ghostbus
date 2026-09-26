@@ -243,11 +243,22 @@ def ghosts():
             WHERE w.service_id IN (SELECT service_id FROM active_services(%(d1)s))
               AND %(s1)s BETWEEN w.start_s + 300 AND w.end_s
         ),
+<<<<<<< HEAD
         seen AS (SELECT DISTINCT trip_id FROM vehicle_positions WHERE time > now() - interval '10 minutes')
+=======
+        seen AS (SELECT DISTINCT trip_id FROM vehicle_positions WHERE time > now() - interval '10 minutes'),
+        -- Only agencies that are sending buses right now can have ghosts. A county with no live feed
+        -- would otherwise show every one of its trips as missing.
+        tracked AS (SELECT DISTINCT t.agency FROM seen JOIN trips t USING (trip_id))
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
         SELECT s.trip_id, s.route_id, r.route_short_name, t.headsign, s.direction_id,
                (s.now_s - s.start_s) / 60 AS minutes_since_start, (s.end_s - s.now_s) / 60 AS minutes_left,
                (s.trip_id IN (SELECT trip_id FROM seen)) AS seen
         FROM scheduled s JOIN trips t USING (trip_id) LEFT JOIN routes r ON r.route_id = s.route_id
+<<<<<<< HEAD
+=======
+        WHERE s.agency IN (SELECT agency FROM tracked)
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
     """, {"d0": d0, "s0": s0, "d1": d1, "s1": s1})
     scheduled = len(rows)
     missing = [r for r in rows if not r["seen"]]
@@ -313,7 +324,11 @@ def stop_search(q_: str = Query(..., alias="q", min_length=2, max_length=60)):
 # Uses OpenStreetMap's Nominatim. Its usage policy: identify the app, at most 1 request/second,
 # cache results, and no search-as-you-type. So the app only geocodes when the rider presses Search,
 # every server shares one throttle, and answers are cached for a day. Addresses are not stored.
+<<<<<<< HEAD
 MIAMI_VIEWBOX = "-80.95,26.05,-80.05,25.10"      # west,north,east,south: Miami-Dade plus a margin
+=======
+SOUTH_FL_VIEWBOX = "-82.2,27.0,-79.95,24.4"      # west,north,east,south: Key West up to northern Palm Beach
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 _geo_cache: dict = {}
 _geo_lock = threading.Lock()
 _geo_last = [0.0]
@@ -334,7 +349,11 @@ def geocode(q_: str = Query(..., alias="q", min_length=3, max_length=120)):
         try:
             resp = requests.get("https://nominatim.openstreetmap.org/search", timeout=8, params={
                 "q": q_, "format": "jsonv2", "limit": 5, "countrycodes": "us",
+<<<<<<< HEAD
                 "viewbox": MIAMI_VIEWBOX, "bounded": 1, "addressdetails": 0,
+=======
+                "viewbox": SOUTH_FL_VIEWBOX, "bounded": 1, "addressdetails": 0,
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
             }, headers={"User-Agent": "GhostBus/1.0 (+https://github.com/AlePerez09/ghostbus)"})
             resp.raise_for_status()
             raw = resp.json()

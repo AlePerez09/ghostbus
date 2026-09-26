@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "name": "Ghost Bus — Miami-Dade bus tracker",
+=======
+  "name": "Ghost Bus — South Florida bus tracker",
+>>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
   "short_name": "Ghost Bus",
   "description": "Know when to leave for your bus, spot ghost buses, and see which routes bunch up.",
   "start_url": "/?source=pwa",
