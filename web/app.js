@@ -140,12 +140,15 @@ function showTab(name) {
 document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => { openStopId = null; showTab(b.dataset.p); });
 
 // ───────────────────────── near me + search ─────────────────────────
-let myPos = null;
+let myPos = null;          // where the phone is (GPS)
+let origin = null;         // a searched address, if the rider picked one: { lat, lon, label }
+const here = () => origin || myPos;
 function locate() {
   if (!navigator.geolocation) { $('#near-out').innerHTML = '<div class="empty">Location isn’t available on this device. Search for a stop instead.</div>'; return; }
   $('#near-out').innerHTML = '<div class="empty">Finding you…</div>';
   navigator.geolocation.getCurrentPosition(p => {
     myPos = { lat: p.coords.latitude, lon: p.coords.longitude };
+    origin = null; pinLayer.clearLayers();
     meLayer.clearLayers();
     L.marker([myPos.lat, myPos.lon], { icon: L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [16, 16] }) }).addTo(meLayer);
     map.setView([myPos.lat, myPos.lon], 15);
@@ -169,17 +172,21 @@ function metersBetween(a, b) {
 }
 
 async function renderNear() {
-  if (!myPos) return;
-  const stops = (await api(`/api/stops/near?lat=${coarse(myPos.lat)}&lon=${coarse(myPos.lon)}&limit=8`))
-    .map(s => ({ ...s, meters: metersBetween(myPos, s) })).sort((a, b) => a.meters - b.meters);
-  if (!stops.length) { $('#near-out').innerHTML = '<div class="empty">No stops found nearby.</div>'; return; }
+  const pos = here();
+  if (!pos) return;
+  const stops = (await api(`/api/stops/near?lat=${coarse(pos.lat)}&lon=${coarse(pos.lon)}&limit=8`))
+    .map(s => ({ ...s, meters: metersBetween(pos, s) })).sort((a, b) => a.meters - b.meters);
+  const head = origin ? `<div class="originbar"><span>📍 Stops near <b>${esc(origin.label)}</b></span>
+      <button class="back" id="use-gps">Use my location</button></div>` : '';
+  if (!stops.length) { $('#near-out').innerHTML = head + '<div class="empty">No stops found nearby.</div>'; return; }
   const far = stops[0].meters > 3000;
   const top = stops.slice(0, 4);
   const results = await Promise.all(top.map(s => api(`/api/stops/${encodeURIComponent(s.stop_id)}/leave?walk_min=${walkMin(s.meters)}`).catch(() => null)));
-  $('#near-out').innerHTML = (far ? '<div class="warn">You’re a long way from the nearest stop. Showing the closest ones anyway.</div>' : '') +
+  $('#near-out').innerHTML = head + (far ? '<div class="warn">That’s a long way from the nearest stop. Showing the closest ones anyway.</div>' : '') +
     top.map((s, i) => stopRow(s, results[i], walkMin(s.meters))).join('') +
     `<button class="btn ghost" id="near-refresh">↻ Refresh</button>`;
   $('#near-refresh').onclick = renderNear;
+  if ($('#use-gps')) $('#use-gps').onclick = locate;
   bindStopRows('#near-out');
 }
 
@@ -202,16 +209,63 @@ function stopRow(stop, leave, walk) {
 function bindStopRows(sel) { document.querySelectorAll(sel + ' [data-stop]').forEach(r => r.onclick = () => openStop(r.dataset.stop)); }
 
 let searchTimer = null;
+const recentPlaces = () => store.get('places', []);
+function renderRecent() {
+  const list = recentPlaces();
+  $('#search-results').innerHTML = list.length ? '<div class="muted" style="margin:8px 0 2px">Recent places</div>' +
+    list.map((p, i) => `<div class="row" data-place="${i}"><span>📍</span><div class="grow ellipsis">${esc(p.label)}</div><span class="muted">›</span></div>`).join('') : '';
+  document.querySelectorAll('#search-results [data-place]').forEach(r => r.onclick = () => useOrigin(recentPlaces()[+r.dataset.place]));
+}
+$('#stop-q').addEventListener('focus', () => { if (!$('#stop-q').value.trim()) renderRecent(); });
 $('#stop-q').addEventListener('input', e => {
   clearTimeout(searchTimer);
   const v = e.target.value.trim();
-  if (v.length < 2) { $('#search-results').innerHTML = ''; return; }
+  if (v.length < 2) { renderRecent(); return; }
   searchTimer = setTimeout(async () => {
-    const stops = await api('/api/stops/search?q=' + encodeURIComponent(v));
-    $('#search-results').innerHTML = stops.length ? stops.map(s => `<div class="row" data-stop="${esc(s.stop_id)}"><div class="grow ellipsis">${esc(s.stop_name)}<div class="sub">Stop ${esc(s.stop_id)}</div></div><span class="muted">›</span></div>`).join('') : '<div class="empty">No matching stops.</div>';
+    const stops = await api('/api/stops/search?q=' + encodeURIComponent(v)).catch(() => []);
+    const addr = v.length >= 3 ? `<div class="row addr" id="addr-go"><span>📍</span><div class="grow ellipsis">Find stops near <b>“${esc(v)}”</b><div class="sub">Address or place · press Enter</div></div><span class="muted">›</span></div>` : '';
+    $('#search-results').innerHTML = addr + (stops.length
+      ? stops.map(s => `<div class="row" data-stop="${esc(s.stop_id)}"><span>🚏</span><div class="grow ellipsis">${esc(s.stop_name)}<div class="sub">Stop ${esc(s.stop_id)}</div></div><span class="muted">›</span></div>`).join('')
+      : '');
+    if ($('#addr-go')) $('#addr-go').onclick = () => searchAddress(v);
     bindStopRows('#search-results');
   }, 220);
 });
+$('#stop-q').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const v = e.target.value.trim(); if (v.length >= 3) { clearTimeout(searchTimer); searchAddress(v); } }
+});
+
+async function searchAddress(text) {
+  $('#search-results').innerHTML = '<div class="empty">Looking up that address…</div>';
+  let places;
+  try { places = await api('/api/geocode?q=' + encodeURIComponent(text)); }
+  catch { $('#search-results').innerHTML = '<div class="empty">Address search is busy. Try again in a moment.</div>'; return; }
+  if (!places.length) {
+    $('#search-results').innerHTML = '<div class="empty">Couldn’t find that in Miami-Dade. Try adding a street number, city or ZIP (e.g. “11200 SW 8 St, Miami”).</div>';
+    return;
+  }
+  if (places.length === 1) return useOrigin(places[0]);
+  $('#search-results').innerHTML = '<div class="muted" style="margin:8px 0 2px">Which one?</div>' + places.map((p, i) =>
+    `<div class="row" data-pick="${i}"><span>📍</span><div class="grow ellipsis">${esc(p.label)}<div class="sub">${esc(p.detail)}</div></div><span class="muted">›</span></div>`).join('') +
+    '<div class="muted" style="margin-top:6px">Search by OpenStreetMap</div>';
+  document.querySelectorAll('#search-results [data-pick]').forEach(r => r.onclick = () => useOrigin(places[+r.dataset.pick]));
+}
+
+const pinLayer = L.layerGroup().addTo(map);
+function useOrigin(place) {
+  const short = place.label.split(',').slice(0, 2).join(',');     // "11200 Southwest 8th Street, University Park"
+  origin = { lat: place.lat, lon: place.lon, label: short };
+  // remember up to 5 recent places on this phone only
+  store.set('places', [{ label: short, lat: place.lat, lon: place.lon },
+    ...recentPlaces().filter(p => p.label !== short)].slice(0, 5));
+  $('#stop-q').value = ''; $('#search-results').innerHTML = ''; $('#stop-q').blur();
+  pinLayer.clearLayers();
+  L.marker([origin.lat, origin.lon], { icon: L.divIcon({ className: '', html: '<div class="pin">📍</div>', iconSize: [28, 28], iconAnchor: [14, 26] }) }).addTo(pinLayer);
+  map.setView([origin.lat, origin.lon], 16);
+  showTab('near');
+  $('#near-out').innerHTML = '<div class="empty">Finding stops…</div>';
+  renderNear();
+}
 
 // ───────────────────────── stop detail ─────────────────────────
 let openStopId = null;
@@ -228,9 +282,9 @@ async function openStop(id, focus = true) {
   if (focus) { showTab('stop'); $('#p-stop').innerHTML = '<div class="empty">Loading…</div>'; $('#search-results').innerHTML = ''; }
   const walkSel = store.get('walk:' + id, null);
   let walk = walkSel;
-  if (walk == null && myPos) {
+  if (walk == null && here()) {
     const info = await api(`/api/stops/${encodeURIComponent(id)}/leave?walk_min=5`).catch(() => null);
-    walk = info ? walkMin(metersBetween(myPos, info.stop)) : 5;
+    walk = info ? walkMin(metersBetween(here(), info.stop)) : 5;
   }
   walk = walk ?? 5;
   const d = await api(`/api/stops/${encodeURIComponent(id)}/leave?walk_min=${walk}`);

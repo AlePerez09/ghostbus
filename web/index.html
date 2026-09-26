@@ -122,6 +122,9 @@
   ol.how { padding-left: 20px; color: var(--text-2); font-size: 14px; } ol.how li { margin: 6px 0; } ol.how b { color: var(--text); }
   .accrow { display: grid; grid-template-columns: 120px 1fr 40px; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--text-2); }
   .accrow .bar { margin-top: 0; }
+  .originbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 4px; font-size: 14px; color: var(--text-2); }
+  .row.addr { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .pin { font-size: 24px; line-height: 1; filter: drop-shadow(0 2px 2px rgba(0,0,0,.6)); }
   .me { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(57,135,229,.25); }
 </style>
 </head>
@@ -147,14 +150,14 @@
   </nav>
 
   <div class="panel on" id="p-near">
-    <input class="search" id="stop-q" placeholder="Search stops (FIU, Flagler, 8 St…)" autocomplete="off" enterkeyhint="search">
+    <input class="search" id="stop-q" placeholder="Search a stop or address" autocomplete="off" enterkeyhint="search">
     <div id="search-results"></div>
     <div id="near-out">
       <button class="btn" id="near-btn">◎ Find stops near me</button>
       <div class="muted" style="text-align:center">Or tap any stop on the map.</div>
     </div>
     <div class="muted" style="margin-top:18px">Times are estimates. Ghost Bus isn’t affiliated with Miami-Dade Transit.
-      Your exact location stays on your phone: we only receive a rounded area (about 100 m) to look up nearby stops.</div>
+      Your exact location stays on your phone: we only receive a rounded area (about 100 m) to look up nearby stops. Addresses you search are looked up with OpenStreetMap and aren’t stored.</div>
     <div id="ios-tip" class="tip" style="display:none">Add Ghost Bus to your home screen: tap <b>Share</b> ⬆︎ then <b>Add to Home Screen</b>.</div>
   </div>
 
@@ -170,6 +173,6 @@
 </section>
 <div class="hovertip" id="hovertip"></div>
 
-<script src="/static/app.js?v=7" defer></script>
+<script src="/static/app.js?v=8" defer></script>
 </body>
 </html>

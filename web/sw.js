@@ -1,8 +1,8 @@
 // Ghost Bus service worker: app shell works offline; live data always comes from the network.
-const SHELL = 'ghostbus-shell-v6';
+const SHELL = 'ghostbus-shell-v7';
 const DATA = 'ghostbus-data-v1';
 const SHELL_FILES = [
-  '/', '/manifest.webmanifest', '/static/app.js?v=7',
+  '/', '/manifest.webmanifest', '/static/app.js?v=8',
   '/static/vendor/leaflet/leaflet.js', '/static/vendor/leaflet/leaflet.css',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/apple-touch-icon.png',
 ];

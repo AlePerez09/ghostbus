@@ -309,6 +309,52 @@ def stop_search(q_: str = Query(..., alias="q", min_length=2, max_length=60)):
              "ORDER BY stop_name LIMIT 15", {"p": f"%{q_}%", "s": q_})
 
 
+# ── Address search (geocoding) ────────────────────────────────────────────────────
+# Uses OpenStreetMap's Nominatim. Its usage policy: identify the app, at most 1 request/second,
+# cache results, and no search-as-you-type. So the app only geocodes when the rider presses Search,
+# every server shares one throttle, and answers are cached for a day. Addresses are not stored.
+MIAMI_VIEWBOX = "-80.95,26.05,-80.05,25.10"      # west,north,east,south: Miami-Dade plus a margin
+_geo_cache: dict = {}
+_geo_lock = threading.Lock()
+_geo_last = [0.0]
+
+
+@app.get("/api/geocode")
+def geocode(q_: str = Query(..., alias="q", min_length=3, max_length=120)):
+    import requests
+    key = " ".join(q_.lower().split())
+    hit = _geo_cache.get(key)
+    if hit and time.time() - hit[0] < 86400:
+        return hit[1]
+    with _geo_lock:                                  # one request per second, across all riders
+        wait = 1.05 - (time.time() - _geo_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        _geo_last[0] = time.time()
+        try:
+            resp = requests.get("https://nominatim.openstreetmap.org/search", timeout=8, params={
+                "q": q_, "format": "jsonv2", "limit": 5, "countrycodes": "us",
+                "viewbox": MIAMI_VIEWBOX, "bounded": 1, "addressdetails": 0,
+            }, headers={"User-Agent": "GhostBus/1.0 (+https://github.com/AlePerez09/ghostbus)"})
+            resp.raise_for_status()
+            raw = resp.json()
+        except Exception:
+            raise HTTPException(503, "Address search is busy right now. Try again in a moment.")
+    out = []
+    for r in raw:
+        parts = [p.strip() for p in r.get("display_name", "").split(",")]
+        for i in range(len(parts) - 1):          # "11200, Southwest 8th Street" -> "11200 Southwest 8th Street"
+            if parts[i].isdigit():
+                parts[i:i + 2] = [f"{parts[i]} {parts[i + 1]}"]
+                break
+        out.append({"label": ", ".join(parts[:3]), "detail": ", ".join(parts[3:5]),
+                    "lat": float(r["lat"]), "lon": float(r["lon"])})
+    if len(_geo_cache) > 5000:
+        _geo_cache.clear()
+    _geo_cache[key] = (time.time(), out)
+    return out
+
+
 @app.get("/api/stops/near")
 def stops_near(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
                limit: int = Query(8, ge=1, le=50)):
