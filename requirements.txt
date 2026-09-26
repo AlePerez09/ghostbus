@@ -1,0 +1,6 @@
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+fastapi>=0.110
+uvicorn>=0.29
+requests>=2.31
+gtfs-realtime-bindings>=1.0

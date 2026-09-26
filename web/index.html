@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Bus</title>
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #111110; --surface: #1a1a19; --surface-2: #242422; --line: #34342f;
+    --text: #ffffff; --text-2: #c3c2b7; --muted: #8b8a82;
+    --accent: #3987e5;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 400px 1fr; height: 100vh; }
+  aside { background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  header { padding: 16px 18px 10px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  h1 span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 6px 18px 12px; }
+  .kpi { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+  .kpi b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .kpi small { color: var(--text-2); font-size: 12px; }
+  nav { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button { background: none; border: 0; color: var(--text-2); padding: 10px 10px; cursor: pointer; font: inherit; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.on { color: var(--text); border-color: var(--accent); }
+  .panel { display: none; padding: 14px 18px; overflow-y: auto; flex: 1; }
+  .panel.on { display: block; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:hover { background: var(--surface-2); }
+  .badge { min-width: 42px; text-align: center; font-weight: 700; border-radius: 6px; padding: 2px 6px; background: var(--surface-2); border: 1px solid var(--line); }
+  .grow { flex: 1; min-width: 0; }
+  .sub { color: var(--text-2); font-size: 12px; }
+  .bar { height: 6px; background: var(--surface-2); border-radius: 4px; margin-top: 5px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .score { font-variant-numeric: tabular-nums; font-weight: 700; width: 34px; text-align: right; }
+  input, select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; width: 100%; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 12px; }
+  .rec { background: var(--surface-2); border-radius: 10px; padding: 14px; margin: 12px 0; }
+  .rec .big { font-size: 28px; font-weight: 700; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 18px 12px; border-top: 1px solid var(--line); }
+  .warn { background: #3a2f12; color: var(--warning); padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; font-size: 13px; }
+  #map { height: 100%; background: #0e0e0d; }
+  .dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
+  svg text { fill: var(--text-2); font-size: 11px; }
+  .tip { position: fixed; pointer-events: none; background: #000; color: #fff; padding: 6px 8px; border-radius: 6px; font-size: 12px; display: none; z-index: 1000; }
+  table.t { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.t td { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  table.t td:last-child { text-align: right; font-weight: 600; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
+  @media (max-width: 800px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 45vh auto; height: auto; }
+    #map { grid-row: 1; }
+    aside { grid-row: 2; border-right: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header><h1>👻 Ghost Bus <span>Miami-Dade bus reliability, live</span></h1></header>
+    <div class="kpis">
+      <div class="kpi"><b id="k-live">–</b><small>buses reporting</small></div>
+      <div class="kpi"><b id="k-ghost">–</b><small>ghost trips now</small></div>
+      <div class="kpi"><b id="k-bunch">–</b><small>bunched arrivals (3h)</small></div>
+    </div>
+    <nav>
+      <button data-p="leave" class="on">Leave now</button>
+      <button data-p="ghosts">Ghosts</button>
+      <button data-p="routes">Routes</button>
+      <button data-p="tiger">Under the hood</button>
+    </nav>
+
+    <section class="panel on" id="p-leave">
+      <input id="stop-q" placeholder="Search a stop (e.g. FIU, Flagler, 8 St)…" autocomplete="off">
+      <div class="hint">Or click any stop on the map. Walk time:
+        <select id="walk" style="width:auto;padding:3px 6px">
+          <option>2</option><option>4</option><option selected>5</option><option>8</option><option>10</option><option>15</option>
+        </select> min</div>
+      <div id="stop-results"></div>
+      <div id="leave-out"></div>
+    </section>
+
+    <section class="panel" id="p-ghosts"><div id="ghost-out" class="sub">Loading…</div></section>
+
+    <section class="panel" id="p-routes">
+      <div class="hint">Reliability score (0–100): drops when buses bunch up (&lt;3 min apart) or arrive unevenly. Worst routes first. Click a route to map it and see its day.</div>
+      <div id="route-out"></div>
+      <div id="route-detail"></div>
+    </section>
+
+    <section class="panel" id="p-tiger"><div id="tiger-out" class="sub">Loading…</div></section>
+
+    <div class="legend">
+      <span class="pill"><span class="dot" style="background:var(--good)"></span>On time (&lt;2 min)</span>
+      <span class="pill"><span class="dot" style="background:var(--warning)"></span>2–5 late</span>
+      <span class="pill"><span class="dot" style="background:var(--serious)"></span>5–10 late</span>
+      <span class="pill"><span class="dot" style="background:var(--critical)"></span>10+ late</span>
+      <span class="pill"><span class="dot" style="background:#8b8a82"></span>No data yet</span>
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = p => fetch(p).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const fmtTime = d => d ? new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+const minsFromNow = d => Math.round((new Date(d) - Date.now()) / 60000);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function delayColor(s) {
+  if (s == null) return '#8b8a82';
+  if (s < 120) return css('--good'); if (s < 300) return css('--warning');
+  if (s < 600) return css('--serious'); return css('--critical');
+}
+function delayLabel(s) { return s == null ? 'no delay data yet' : s < 0 ? `${Math.round(-s / 60)} min early` : `${Math.round(s / 60)} min late`; }
+
+// ── Map ──
+const map = L.map('map', { zoomControl: true }).setView([25.765, -80.30], 12);
+// Standard OpenStreetMap tiles (no API key), darkened with a CSS filter to match the theme.
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors', maxZoom: 19, className: 'dark-tiles' }).addTo(map);
+const busLayer = L.layerGroup().addTo(map), routeLayer = L.layerGroup().addTo(map), stopLayer = L.layerGroup().addTo(map);
+
+async function refreshLive() {
+  const buses = await api('/api/live');
+  busLayer.clearLayers();
+  for (const b of buses) {
+    L.circleMarker([b.lat, b.lon], { radius: 6, weight: 2, color: css('--surface'), fillColor: delayColor(b.delay_s), fillOpacity: 1 })
+      .bindPopup(`<b>Route ${esc(b.route_short_name || b.route_id)}</b><br>${delayLabel(b.delay_s)}<br><span class="sub">Bus ${esc(b.vehicle_id)} · ${fmtTime(b.time)}</span>`)
+      .addTo(busLayer);
+  }
+  $('#k-live').textContent = buses.length;
+}
+
+// ── Ghosts ──
+async function refreshGhosts() {
+  const g = await api('/api/ghosts');
+  $('#k-ghost').textContent = g.ghost_count;
+  let html = g.warning ? `<div class="warn">${esc(g.warning)}</div>` : '';
+  html += `<div class="hint">${g.scheduled_now} trips should be running right now. ${g.ghost_count} ${g.ghost_count === 1 ? "has" : "have"} sent no GPS signal in the last 10 minutes — riders waiting for these buses are waiting for a ghost.</div>`;
+  if (!g.ghosts.length) html += '<div class="sub">No ghosts right now 🎉</div>';
+  for (const t of g.ghosts) {
+    html += `<div class="row" data-route="${esc(t.route_id)}"><span class="badge">${esc(t.route_short_name || t.route_id)}</span>
+      <div class="grow"><div>${esc(t.headsign || 'Trip ' + t.trip_id)}</div>
+      <div class="sub">Should have left ${t.minutes_since_start} min ago · ${t.minutes_left} min of service missing</div></div></div>`;
+  }
+  $('#ghost-out').innerHTML = html;
+  $('#ghost-out').querySelectorAll('.row').forEach(r => r.onclick = () => showRoute(r.dataset.route));
+}
+
+// ── Routes leaderboard ──
+async function refreshRoutes() {
+  const rows = await api('/api/reliability?hours=3');
+  $('#k-bunch').textContent = rows.reduce((a, r) => a + r.bunched, 0);
+  $('#route-out').innerHTML = rows.map(r => `
+    <div class="row" data-route="${esc(r.route_id)}">
+      <span class="badge">${esc(r.route_short_name || r.route_id)}</span>
+      <div class="grow"><div>${esc(r.route_long_name || '')}</div>
+        <div class="sub">${r.bunched_pct}% bunched · every ${Math.round((r.avg_headway_s || 0) / 60)} min avg · ${delayLabel(r.avg_delay_s)} avg</div>
+        <div class="bar"><i style="width:${r.score}%"></i></div></div>
+      <span class="score">${r.score}</span>
+    </div>`).join('') || '<div class="sub">Not enough data yet — give it a few minutes.</div>';
+  $('#route-out').querySelectorAll('.row').forEach(r => r.onclick = () => showRoute(r.dataset.route));
+}
+
+async function showRoute(routeId) {
+  routeLayer.clearLayers();
+  const shapes = await api(`/api/routes/${encodeURIComponent(routeId)}/shape`);
+  const lines = shapes.map(c => L.polyline(c, { color: css('--accent'), weight: 4, opacity: .85 }).addTo(routeLayer));
+  if (lines.length) map.fitBounds(L.featureGroup(lines).getBounds(), { padding: [30, 30] });
+  const tl = await api(`/api/routes/${encodeURIComponent(routeId)}/timeline?hours=6`);
+  $('#route-detail').innerHTML = `<h3 style="margin:18px 0 4px;font-size:15px">Route ${esc(routeId)}: bunched arrivals per 15 min (last 6h)</h3>` + barChart(tl);
+  document.querySelector('nav button[data-p="routes"]').click();
+  $('#route-detail').scrollIntoView({ behavior: 'smooth' });
+}
+
+// Single-series bar chart with per-bar hover tooltip.
+function barChart(rows) {
+  if (!rows.length) return '<div class="sub">No data yet.</div>';
+  const W = 360, H = 130, pad = { l: 26, b: 20, t: 8 };
+  const max = Math.max(1, ...rows.map(r => r.bunched));
+  const bw = (W - pad.l) / rows.length;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Bunched arrivals per 15 minutes">`;
+  s += `<line x1="${pad.l}" x2="${W}" y1="${H - pad.b}" y2="${H - pad.b}" stroke="${css('--line')}"/>`;
+  s += `<text x="${pad.l - 4}" y="${pad.t + 8}" text-anchor="end">${max}</text><text x="${pad.l - 4}" y="${H - pad.b}" text-anchor="end">0</text>`;
+  rows.forEach((r, i) => {
+    const h = (H - pad.b - pad.t) * r.bunched / max, x = pad.l + i * bw + 1;
+    const tip = `${fmtTime(r.bucket)} · ${r.bunched} bunched of ${r.arrivals} arrivals · avg ${delayLabel(r.avg_delay_s)}`;
+    s += `<rect x="${x}" y="${pad.t}" width="${Math.max(1, bw - 2)}" height="${H - pad.b - pad.t}" fill="transparent" data-tip="${esc(tip)}"/>`;
+    if (h > 0) s += `<rect x="${x}" y="${H - pad.b - h}" width="${Math.max(1, bw - 2)}" height="${h}" rx="2" fill="${css('--accent')}" pointer-events="none"/>`;
+    if (i % 8 === 0) s += `<text x="${x}" y="${H - 5}">${fmtTime(r.bucket)}</text>`;
+  });
+  return s + '</svg>';
+}
+document.addEventListener('mousemove', e => {
+  const t = e.target.closest && e.target.closest('[data-tip]'), tip = $('#tip');
+  if (!t) { tip.style.display = 'none'; return; }
+  tip.textContent = t.dataset.tip; tip.style.display = 'block';
+  tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px';
+});
+
+// ── Leave now ──
+let currentStop = null, searchTimer = null;
+$('#stop-q').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const v = e.target.value.trim();
+  if (v.length < 2) { $('#stop-results').innerHTML = ''; return; }
+  searchTimer = setTimeout(async () => {
+    const stops = await api('/api/stops/search?q=' + encodeURIComponent(v));
+    $('#stop-results').innerHTML = stops.map(s => `<div class="row" data-id="${esc(s.stop_id)}"><div class="grow">${esc(s.stop_name)}<div class="sub">Stop ${esc(s.stop_id)}</div></div></div>`).join('');
+    $('#stop-results').querySelectorAll('.row').forEach(r => r.onclick = () => { $('#stop-results').innerHTML = ''; pickStop(r.dataset.id); });
+  }, 200);
+});
+$('#walk').onchange = () => currentStop && pickStop(currentStop);
+map.on('click', async e => {
+  const near = await api(`/api/stops/near?lat=${e.latlng.lat}&lon=${e.latlng.lng}&limit=1`);
+  if (near.length && near[0].meters < 400) pickStop(near[0].stop_id);
+});
+
+async function pickStop(id, focus = true) {
+  currentStop = id;
+  if (focus) document.querySelector('nav button[data-p="leave"]').click();
+  const d = await api(`/api/stops/${encodeURIComponent(id)}/leave?walk_min=${$('#walk').value}`);
+  stopLayer.clearLayers();
+  L.circleMarker([d.stop.lat, d.stop.lon], { radius: 9, color: css('--accent'), weight: 3, fillOpacity: 0 }).addTo(stopLayer);
+  if (focus) map.panTo([d.stop.lat, d.stop.lon]);
+  const r = d.recommendation;
+  const basis = { live: 'tracking the bus live', history: 'no bus yet — padded by how late this stop usually runs', schedule: 'schedule only', ghost: 'bus is missing' };
+  let html = `<h3 style="margin:14px 0 0;font-size:15px">${esc(d.stop.stop_name)}</h3>`;
+  if (r) {
+    const m = minsFromNow(r.leave_at);
+    html += `<div class="rec"><div class="sub">Leave ${m <= 0 ? '<b style="color:var(--critical)">now</b>' : 'in'}</div>
+      <div class="big">${m <= 0 ? 'Go!' : m + ' min'}</div>
+      <div>Catch route <b>${esc(r.route_short_name || r.route_id)}</b> at ${fmtTime(r.eta)}
+      ${r.delay_min ? `<span class="sub">(${r.delay_min > 0 ? r.delay_min + ' min late' : -r.delay_min + ' min early'})</span>` : ''}</div>
+      <div class="sub">${basis[r.basis]}${r.stops_away != null ? ` · ${r.stops_away} stops away` : ''}</div></div>`;
+  } else html += '<div class="sub" style="margin:10px 0">No catchable bus in the next 90 minutes.</div>';
+  html += '<table class="t">' + d.arrivals.map(a => `<tr>
+      <td><span class="badge">${esc(a.route_short_name || a.route_id)}</span></td>
+      <td class="sub">${a.basis === 'ghost' ? '<span style="color:var(--critical)">👻 not reporting</span>' : esc(basis[a.basis])}</td>
+      <td>${a.eta ? fmtTime(a.eta) : '<s>' + fmtTime(a.scheduled) + '</s>'}</td></tr>`).join('') + '</table>';
+  $('#leave-out').innerHTML = html;
+}
+
+// ── Under the hood ──
+async function refreshTiger() {
+  const t = await api('/api/tiger');
+  const n = x => x == null ? '—' : Number(x).toLocaleString();
+  let html = '<div class="hint">Everything here runs on one Tiger Data (PostgreSQL + TimescaleDB) database: schedule tables and GPS time series side by side.</div>';
+  for (const [name, s] of Object.entries(t.hypertables)) {
+    html += `<h3 style="font-size:14px;margin:14px 0 4px">${name} <span class="sub">hypertable</span></h3><table class="t">
+      <tr><td>Rows</td><td>${n(s.rows)}</td></tr>
+      <tr><td>Chunks (compressed)</td><td>${s.chunks} (${s.compressed_chunks})</td></tr>
+      <tr><td>Size on disk</td><td>${(s.bytes / 1e6).toFixed(1)} MB</td></tr>
+      <tr><td>Compression ratio</td><td>${s.compression_ratio ? s.compression_ratio + '×' : 'pending'}</td></tr></table>`;
+  }
+  const b = t.benchmark_24h_leaderboard;
+  html += `<h3 style="font-size:14px;margin:18px 0 4px">24h leaderboard query</h3><table class="t">
+    <tr><td>Scanning raw arrivals</td><td>${b.raw_scan_ms} ms</td></tr>
+    <tr><td>Continuous aggregate</td><td>${b.continuous_aggregate_ms} ms</td></tr>
+    <tr><td>Speed-up</td><td>${(b.raw_scan_ms / Math.max(b.continuous_aggregate_ms, 0.01)).toFixed(1)}×</td></tr></table>`;
+  $('#tiger-out').innerHTML = html;
+}
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === 'p-' + b.dataset.p));
+  if (b.dataset.p === 'tiger') refreshTiger().catch(console.error);
+});
+
+async function refreshAll() {
+  await Promise.allSettled([refreshLive(), refreshGhosts(), refreshRoutes()]);
+  if (currentStop) pickStop(currentStop, false).catch(console.error);
+}
+refreshAll();
+setInterval(refreshAll, 15000);
+</script>
+</body>
+</html>
