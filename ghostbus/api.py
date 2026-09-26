@@ -114,7 +114,7 @@ def ID():
 # At most 8 queries run at once no matter how many requests arrive; extras wait up to 3 s, then get
 # a quick "busy" answer instead of queueing forever. This caps database load even if someone
 # dodges the per-IP limit (e.g. with many real IPs).
-pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, timeout=3, kwargs={"row_factory": dict_row},
+pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, timeout=3, kwargs={"row_factory": dict_row, "options": "-c statement_timeout=15000"},
                       check=ConnectionPool.check_connection,   # test each connection before use; drop dead ones
                       max_idle=300, open=True)
 WEB = Path(__file__).resolve().parent.parent / "web"

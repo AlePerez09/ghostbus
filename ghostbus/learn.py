@@ -33,6 +33,7 @@ SCHEMA = [
          live BOOLEAN, error_s INT, in_window BOOLEAN)""",
     "SELECT create_hypertable('prediction_results', by_range('time', INTERVAL '1 day'), if_not_exists => TRUE)",
     "CREATE INDEX IF NOT EXISTS sa_trip_stop ON stop_arrivals (trip_id, stop_id, time DESC)",
+    "CREATE INDEX IF NOT EXISTS vp_trip_time ON vehicle_positions (trip_id, time DESC)",
     # ── rollups ──
     """CREATE MATERIALIZED VIEW IF NOT EXISTS delay_profile_hourly WITH (timescaledb.continuous) AS
        SELECT time_bucket(INTERVAL '1 hour', time) AS bucket, route_id, stop_id, count(*) AS n,
@@ -173,22 +174,25 @@ def record_trip_outcomes(conn, lookback_s=1800):
         midnight = datetime(d.year, d.month, d.day, 12, tzinfo=TZ) - timedelta(hours=12)
         now_s = int((now - midnight).total_seconds())
         cur = conn.execute("""
+            WITH due AS (
+              SELECT w.* FROM trip_windows w
+              WHERE w.service_id IN (SELECT service_id FROM active_services(%(d)s))
+                AND w.end_s + 600 BETWEEN %(now_s)s - %(lb)s AND %(now_s)s),
+            -- one pass over recent GPS pings instead of one lookup per trip
+            seen AS (
+              SELECT DISTINCT trip_id FROM vehicle_positions
+              WHERE time > now() - make_interval(secs => %(lb)s + 7200) AND trip_id IS NOT NULL)
             INSERT INTO trip_outcomes (time, trip_id, route_id, direction_id, start_s, seen)
-            SELECT %(mid)s + make_interval(secs => w.start_s), w.trip_id, w.route_id, w.direction_id, w.start_s,
-                   EXISTS (SELECT 1 FROM vehicle_positions vp
-                           WHERE vp.trip_id = w.trip_id
-                             AND vp.time BETWEEN %(mid)s + make_interval(secs => w.start_s - 1200)
-                                             AND %(mid)s + make_interval(secs => w.end_s + 1800))
-            FROM trip_windows w
-            WHERE w.service_id IN (SELECT service_id FROM active_services(%(d)s))
-              AND w.end_s + 600 BETWEEN %(now_s)s - %(lb)s AND %(now_s)s
-              -- only judge trips whose whole window had live data flowing
-              AND EXISTS (SELECT 1 FROM vehicle_positions vp2
-                          WHERE vp2.time BETWEEN %(mid)s + make_interval(secs => w.start_s)
-                                             AND %(mid)s + make_interval(secs => w.start_s + 300))
-              AND EXISTS (SELECT 1 FROM vehicle_positions vp3
-                          WHERE vp3.time BETWEEN %(mid)s + make_interval(secs => w.end_s - 300)
-                                             AND %(mid)s + make_interval(secs => w.end_s))
+            SELECT %(mid)s + make_interval(secs => d.start_s), d.trip_id, d.route_id, d.direction_id, d.start_s,
+                   d.trip_id IN (SELECT trip_id FROM seen)
+            FROM due d
+            -- only judge trips whose window had live data flowing (feed outages don't count as ghosts)
+            WHERE EXISTS (SELECT 1 FROM vehicle_positions vp
+                          WHERE vp.time BETWEEN %(mid)s + make_interval(secs => d.start_s)
+                                            AND %(mid)s + make_interval(secs => d.start_s + 300) LIMIT 1)
+              AND EXISTS (SELECT 1 FROM vehicle_positions vp
+                          WHERE vp.time BETWEEN %(mid)s + make_interval(secs => d.end_s - 300)
+                                            AND %(mid)s + make_interval(secs => d.end_s) LIMIT 1)
             ON CONFLICT (trip_id, time) DO NOTHING
         """, {"mid": midnight, "d": d, "now_s": now_s, "lb": lookback_s})
         inserted += cur.rowcount or 0

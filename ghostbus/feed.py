@@ -123,32 +123,35 @@ _last_schedule_check = [0.0]
 _last_job = {"predictions": 0.0, "outcomes": 0.0}
 
 
-def _run_learning_jobs():
-    """Every 5 min: log fresh predictions and grade old ones. Every 10 min: record which trips never showed.
-    Failures here are logged and never stop the bus feed."""
-    now = time.time()
-    try:
-        if now - _last_job["predictions"] > 300:
-            _last_job["predictions"] = now
-            with psycopg.connect(DATABASE_URL) as c:
-                made = learn.record_predictions(c)
-                graded = learn.resolve_predictions(c)
-            log(f"learning: logged {made} predictions, graded {graded}")
-        if now - _last_job["outcomes"] > 600:
-            first = _last_job["outcomes"] == 0.0
-            _last_job["outcomes"] = now
-            with psycopg.connect(DATABASE_URL) as c:
-                n = learn.record_trip_outcomes(c, lookback_s=86400 if first else 1800)
-            log(f"learning: recorded {n} trip outcomes")
-    except Exception as ex:
-        log(f"learning job failed: {ex}")
+def _learning_loop():
+    """Separate thread: every 5 min log fresh predictions and grade old ones; every 10 min record which
+    trips never showed. Runs apart from the bus feed, with a query time limit, so a slow query can
+    never freeze live data."""
+    first = True
+    while not _stop.wait(30 if first else 60):
+        if not str(status["phase"]).startswith("live"):
+            continue                       # only the server that writes bus data does this
+        now = time.time()
+        try:
+            with psycopg.connect(DATABASE_URL, options="-c statement_timeout=60000") as c:
+                if now - _last_job["predictions"] > 300:
+                    _last_job["predictions"] = now
+                    made = learn.record_predictions(c)
+                    graded = learn.resolve_predictions(c)
+                    log(f"learning: logged {made} predictions, graded {graded}")
+                if now - _last_job["outcomes"] > 600:
+                    _last_job["outcomes"] = now
+                    n = learn.record_trip_outcomes(c, lookback_s=10800 if first else 1800)
+                    log(f"learning: recorded {n} trip outcomes")
+            first = False
+        except Exception as ex:
+            log(f"learning job failed (feed unaffected): {ex}")
 
 
 def _tick(buses, _arrivals):
     status["last_tick"] = datetime.now(timezone.utc).isoformat()
     status["buses"] = buses
     status["error"] = None
-    _run_learning_jobs()
     # Once every 10 minutes: is it 3 AM and is the schedule a week old? Then refresh it.
     if time.time() - _last_schedule_check[0] > 600:
         _last_schedule_check[0] = time.time()
@@ -161,7 +164,8 @@ def _tick(buses, _arrivals):
 
 def run_feed(mode):
     """One feed session on one connection. Returns/raises when it should be restarted."""
-    with psycopg.connect(DATABASE_URL, keepalives=1, keepalives_idle=30) as conn:
+    with psycopg.connect(DATABASE_URL, keepalives=1, keepalives_idle=30,
+                         options="-c statement_timeout=60000") as conn:   # no query may stall the feed
         got = conn.execute("SELECT pg_try_advisory_lock(%s)", (FEED_LOCK_ID,)).fetchone()[0]
         conn.commit()
         if not got:
@@ -244,6 +248,7 @@ def start():
     t = threading.Thread(target=run, name="ghostbus-feed", daemon=True)
     t.start()
     threading.Thread(target=keep_awake, name="ghostbus-keepalive", daemon=True).start()
+    threading.Thread(target=_learning_loop, name="ghostbus-learning", daemon=True).start()
     return t
 
 

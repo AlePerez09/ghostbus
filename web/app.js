@@ -61,7 +61,8 @@ const BASIS = { live: 'tracking the bus live', history: 'bus not out yet · padd
 // ───────────────────────── map ─────────────────────────
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([25.765, -80.30], 12);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap', maxZoom: 19, className: 'dark-tiles' }).addTo(map);
+  attribution: '&copy; OpenStreetMap', maxZoom: 19, className: 'dark-tiles',
+  referrerPolicy: 'strict-origin-when-cross-origin' }).addTo(map);   // OSM requires knowing which site asks
 const busLayer = L.layerGroup().addTo(map), routeLayer = L.layerGroup().addTo(map),
       stopLayer = L.layerGroup().addTo(map), meLayer = L.layerGroup().addTo(map);
 
