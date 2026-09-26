@@ -165,39 +165,41 @@ def _dict_run(conn):
 
 
 def record_trip_outcomes(conn, lookback_s=1800):
-    """For trips that should have finished 10–40 min ago: did a bus ever report for them?
-    Skipped for any stretch where the feed itself was down (so outages don't count as ghosts)."""
+    """For trips that should have finished recently: did a bus ever report for them?
+    Trips whose start or end fell in a feed outage are skipped (outages don't count as ghosts).
+    Built to be cheap: ONE pass over recent GPS pings gives both 'which trips were seen' and
+    'which 5-minute slots had live data', then the schedule is checked against those two sets."""
     now = datetime.now(timezone.utc)
     local = now.astimezone(TZ)
-    inserted = 0
+    since = now - timedelta(seconds=lookback_s + 7200)
+    pings = conn.execute("""
+        SELECT array_agg(DISTINCT trip_id) FILTER (WHERE trip_id IS NOT NULL),
+               array_agg(DISTINCT time_bucket(INTERVAL '5 minutes', time))
+        FROM vehicle_positions WHERE time > %s
+    """, (since,)).fetchone()
+    seen, alive = set(pings[0] or []), set(pings[1] or [])
+    rows = []
     for d in (local.date(), local.date() - timedelta(days=1)):
         midnight = datetime(d.year, d.month, d.day, 12, tzinfo=TZ) - timedelta(hours=12)
         now_s = int((now - midnight).total_seconds())
-        cur = conn.execute("""
-            WITH due AS (
-              SELECT w.* FROM trip_windows w
-              WHERE w.service_id IN (SELECT service_id FROM active_services(%(d)s))
-                AND w.end_s + 600 BETWEEN %(now_s)s - %(lb)s AND %(now_s)s),
-            -- one pass over recent GPS pings instead of one lookup per trip
-            seen AS (
-              SELECT DISTINCT trip_id FROM vehicle_positions
-              WHERE time > now() - make_interval(secs => %(lb)s + 7200) AND trip_id IS NOT NULL)
-            INSERT INTO trip_outcomes (time, trip_id, route_id, direction_id, start_s, seen)
-            SELECT %(mid)s + make_interval(secs => d.start_s), d.trip_id, d.route_id, d.direction_id, d.start_s,
-                   d.trip_id IN (SELECT trip_id FROM seen)
-            FROM due d
-            -- only judge trips whose window had live data flowing (feed outages don't count as ghosts)
-            WHERE EXISTS (SELECT 1 FROM vehicle_positions vp
-                          WHERE vp.time BETWEEN %(mid)s + make_interval(secs => d.start_s)
-                                            AND %(mid)s + make_interval(secs => d.start_s + 300) LIMIT 1)
-              AND EXISTS (SELECT 1 FROM vehicle_positions vp
-                          WHERE vp.time BETWEEN %(mid)s + make_interval(secs => d.end_s - 300)
-                                            AND %(mid)s + make_interval(secs => d.end_s) LIMIT 1)
-            ON CONFLICT (trip_id, time) DO NOTHING
-        """, {"mid": midnight, "d": d, "now_s": now_s, "lb": lookback_s})
-        inserted += cur.rowcount or 0
+        due = conn.execute("""
+            SELECT trip_id, route_id, direction_id, start_s, end_s FROM trip_windows
+            WHERE service_id IN (SELECT service_id FROM active_services(%s))
+              AND end_s + 600 BETWEEN %s AND %s
+        """, (d, now_s - lookback_s, now_s)).fetchall()
+        for trip_id, route_id, direction_id, start_s, end_s in due:
+            start = midnight + timedelta(seconds=start_s)
+            end = midnight + timedelta(seconds=end_s)
+            slot = lambda t: t - timedelta(minutes=t.minute % 5, seconds=t.second, microseconds=t.microsecond)
+            if slot(start) not in alive or slot(end) not in alive:
+                continue
+            rows.append((start, trip_id, route_id, direction_id, start_s, trip_id in seen))
+    if rows:
+        with conn.cursor() as cur:
+            cur.executemany("""INSERT INTO trip_outcomes (time, trip_id, route_id, direction_id, start_s, seen)
+                               VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (trip_id, time) DO NOTHING""", rows)
     conn.commit()
-    return inserted
+    return len(rows)
 
 
 def record_predictions(conn):

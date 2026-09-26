@@ -141,7 +141,7 @@ def _learning_loop():
                     log(f"learning: logged {made} predictions, graded {graded}")
                 if now - _last_job["outcomes"] > 600:
                     _last_job["outcomes"] = now
-                    n = learn.record_trip_outcomes(c, lookback_s=10800 if first else 1800)
+                    n = learn.record_trip_outcomes(c, lookback_s=1800)
                     log(f"learning: recorded {n} trip outcomes")
             first = False
         except Exception as ex:
