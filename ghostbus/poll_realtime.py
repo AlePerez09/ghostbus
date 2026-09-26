@@ -47,24 +47,39 @@ def fetch():
 
 
 def poll_loop(conn, tracker, stop=None, log=print, on_tick=None):
-    """Poll the realtime feed until `stop` (a threading.Event) is set."""
+    """Poll the realtime feed until `stop` (a threading.Event) is set.
+    Backs off when the feed errors or rate-limits us, so we never hammer the county's API."""
+    failures = 0
     while not (stop and stop.is_set()):
         started = time.time()
+        wait = POLL_SECONDS
+        pos = arr = []
         try:
             obs = fetch()
             pos, arr = tracker.process(obs)
             tracker.write(pos, arr)
+            failures = 0
             ticks = getattr(tracker, "_ticks", 0) + 1
             tracker._ticks = ticks
             if ticks % 40 == 0:
                 tracker.prune({o.trip_id for o in obs if o.trip_id}, datetime.now(timezone.utc))
             log(f"{datetime.now():%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
-            if on_tick:
-                on_tick(len(pos), len(arr))
-        except Exception as ex:  # keep polling through network blips
+        except psycopg.OperationalError:
+            raise                                   # database connection lost: supervisor reconnects
+        except requests.HTTPError as ex:
             conn.rollback()
-            log(f"{datetime.now():%H:%M:%S}  poll error: {ex}")
-        wait = max(1.0, POLL_SECONDS - (time.time() - started))
+            failures += 1
+            retry_after = ex.response.headers.get("Retry-After") if ex.response is not None else None
+            wait = int(retry_after) if retry_after and retry_after.isdigit() else min(POLL_SECONDS * 2 ** failures, 300)
+            log(f"{datetime.now():%H:%M:%S}  feed HTTP {ex.response.status_code if ex.response is not None else '?'}; retrying in {wait}s")
+        except Exception as ex:  # network blips, malformed data
+            conn.rollback()
+            failures += 1
+            wait = min(POLL_SECONDS * 2 ** failures, 300)
+            log(f"{datetime.now():%H:%M:%S}  poll error: {ex}; retrying in {wait}s")
+        if on_tick:
+            on_tick(len(pos), len(arr))
+        wait = max(1.0, wait - (time.time() - started))
         if stop:
             stop.wait(wait)
         else:

@@ -62,7 +62,7 @@ On Windows you can just double-click **`Ghost Bus.bat`** instead.
 
 On first boot against an empty database, the app does everything by itself: it creates the hypertables, compression and continuous aggregates, loads the Miami-Dade schedule (falling back to a built-in sample if the county site is down), generates 3 hours of history, and then keeps the bus feed running. It uses the realtime feed when `GTFS_RT_API_KEY` is set and simulated buses otherwise. The top-bar chip shows **Live** or **Demo data**, so it's always clear which one you're seeing.
 
-**Only run one data feed per database.** If the app is deployed online, set `FEED_MODE=off` in your local `.env`.
+**Only one server ever writes bus data.** A database lock makes sure of that. If the app runs on Render and on your laptop at the same time, the second copy waits on standby and just shows the data. If the first copy dies, the second takes over within a minute.
 
 ## Deploy it (public link for phones, about 5 minutes)
 
@@ -134,6 +134,22 @@ Before the demo, run `python -m ghostbus.compress_now --older-than 60` so the co
 ---
 
 </details>
+
+## Reliability, security and privacy
+
+| Risk | What Ghost Bus does |
+|---|---|
+| Database or network drops | The feed reconnects by itself, waiting 5 s at first and up to 5 min. Web requests retry once, and dead connections are tested and replaced. |
+| Two servers writing the same data | A Postgres advisory lock allows a single writer; the others stay on standby and take over automatically. |
+| Live feed goes down | Ghost alerts pause (otherwise *every* bus would look like a ghost), and ETAs fall back to the schedule with a clear banner. |
+| Schedule changes (new trip IDs) | The schedule reloads weekly at 3 AM, or as soon as its calendar expires. If the download fails, the old schedule stays. |
+| County API rate limits | Polling backs off and follows `Retry-After`. |
+| Database growing forever | Retention keeps raw GPS 14 days and stop events 90 days; the reliability rollups are kept. Old data is compressed. |
+| Floods or scraping | Per-IP rate limit using Cloudflare's unforgeable `CF-Connecting-IP`, response caching, and a hard cap of 8 concurrent DB queries that answers "busy" quickly. |
+| Injection or XSS | Parameterized SQL only, escaped output, and a strict Content-Security-Policy with no inline scripts. Also clickjacking protection, `nosniff` and HSTS. |
+| Leaked secrets | `.env` is git-ignored, the push script refuses to upload it, Render stores `DATABASE_URL` as a secret, and error details never reach the public API. |
+| Rider privacy | The server only receives your location rounded to about 100 m, and exact distances are computed on the phone. There are no access logs, no accounts and no analytics. Saved stops stay on the phone. |
+| Vulnerable dependencies | Versions are pinned, and Dependabot opens PRs for security fixes. |
 
 ## API
 

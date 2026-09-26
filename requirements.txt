@@ -1,6 +1,7 @@
-psycopg[binary]>=3.2
-psycopg-pool>=3.2
-fastapi>=0.110
-uvicorn>=0.29
-requests>=2.31
-gtfs-realtime-bindings>=1.0
+# Pinned so a surprise upstream release (or a hijacked package) can't change what we deploy.
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+fastapi==0.141.1
+uvicorn==0.46.0
+requests==2.33.1
+gtfs-realtime-bindings==3.0.0

@@ -8,11 +8,16 @@ from pathlib import Path
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+import threading
+from collections import defaultdict
+from functools import wraps
+
+from fastapi import FastAPI, HTTPException, Path as PathParam, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from . import feed
 from .config import DATABASE_URL, TZ
@@ -25,15 +30,104 @@ async def lifespan(_app):
     feed.stop()
 
 
-app = FastAPI(title="Ghost Bus", lifespan=lifespan)
-pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=True)
+# No interactive API docs in production: less surface for people poking around.
+app = FastAPI(title="Ghost Bus", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+# ── Security: headers + per-IP rate limit ─────────────────────────────────────
+CSP = ("default-src 'self'; "
+       "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; "
+       "manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'")
+RATE_LIMIT = 600          # requests per IP per minute. One phone uses ~16; whole classrooms share one campus Wi-Fi IP
+_hits: dict[str, list] = defaultdict(lambda: [0.0, 0])
+_hits_lock = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    """The visitor's real IP, in a way they can't fake.
+    Render sits behind Cloudflare, which *overwrites* CF-Connecting-IP with the address that actually
+    connected, so a visitor can't forge it. X-Forwarded-For is only appended to, so its left side is
+    visitor-controlled and must not be trusted for rate limiting."""
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[-1].strip()      # rightmost = added by the proxy closest to us
+    return request.scope["client"][0] if request.scope.get("client") else "?"
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    ip = client_ip(request)
+    now = time.monotonic()
+    with _hits_lock:
+        window = _hits[ip]
+        if now - window[0] > 60:
+            window[0], window[1] = now, 0
+        window[1] += 1
+        too_many = window[1] > RATE_LIMIT
+        if len(_hits) > 50_000:            # don't let the tracker itself grow forever
+            _hits.clear()
+    if too_many:
+        return JSONResponse({"detail": "Too many requests, slow down."}, status_code=429, headers={"Retry-After": "60"})
+    try:
+        response = await call_next(request)
+    except PoolTimeout:
+        response = JSONResponse({"detail": "Busy right now, try again in a few seconds."}, status_code=503,
+                                headers={"Retry-After": "5"})
+    response.headers["Content-Security-Policy"] = CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
+def cached(seconds):
+    """Share one result per argument set for a few seconds, so a crowd (or an attacker)
+    hitting the same endpoint costs the database one query instead of thousands."""
+    def deco(fn):
+        store, lock = {}, threading.Lock()
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.monotonic()
+            with lock:
+                hit = store.get(key)
+                if hit and now - hit[0] < seconds:
+                    return hit[1]
+            value = fn(*args, **kwargs)
+            with lock:
+                if len(store) > 2000:
+                    store.clear()
+                store[key] = (now, value)
+            return value
+        return wrapper
+    return deco
+
+
+def ID():
+    return PathParam(..., min_length=1, max_length=64)   # fresh object per parameter (FastAPI mutates it)
+# At most 8 queries run at once no matter how many requests arrive; extras wait up to 3 s, then get
+# a quick "busy" answer instead of queueing forever. This caps database load even if someone
+# dodges the per-IP limit (e.g. with many real IPs).
+pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, timeout=3, kwargs={"row_factory": dict_row},
+                      check=ConnectionPool.check_connection,   # test each connection before use; drop dead ones
+                      max_idle=300, open=True)
 WEB = Path(__file__).resolve().parent.parent / "web"
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
 def q(sql, params=None):
-    with pool.connection() as conn:
-        return conn.execute(sql, params or {}).fetchall()
+    for attempt in (1, 2):   # one retry if the database dropped the connection mid-query
+        try:
+            with pool.connection() as conn:
+                return conn.execute(sql, params or {}).fetchall()
+        except psycopg.OperationalError:
+            if attempt == 2:
+                raise
 
 
 def service_clock(now: datetime):
@@ -46,7 +140,7 @@ def service_clock(now: datetime):
     return out
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def index():
     return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -64,11 +158,37 @@ def manifest():
 
 @app.get("/api/health")
 def health():
-    return {k: v for k, v in feed.status.items() if k != "log"} | {"recent_log": feed.status["log"][-5:]}
+    st = feed.status
+    mode = st["mode"]
+    if not str(st["phase"]).startswith("live"):      # viewer/standby: report what the writing server runs
+        mode = writer_mode() or mode
+    # Public: only coarse status. Full errors and logs stay in the server logs.
+    return {"phase": st["phase"], "mode": mode, "last_tick": st["last_tick"], "buses": st["buses"],
+            "ok": st["error"] is None,
+            "feed_fresh": feed_fresh() if st["phase"] not in ("starting", "creating database", "loading schedule") else None}
+
+
+@cached(60)
+def writer_mode():
+    try:
+        row = q("SELECT value FROM meta WHERE key = 'feed_mode'")
+        return row[0]["value"] if row else None
+    except Exception:
+        return None
+
+
+@cached(10)
+def feed_fresh() -> bool:
+    """Is bus data actually arriving? If the feed is down, every bus would look like a 'ghost',
+    so ghost alerts and live ETAs are paused instead of crying wolf."""
+    row = q("SELECT max(time) > now() - interval '3 minutes' AS fresh FROM vehicle_positions "
+            "WHERE time > now() - interval '1 hour'")
+    return bool(row and row[0]["fresh"])
 
 
 # ── Live map ─────────────────────────────────────────────────────────────────
 @app.get("/api/live")
+@cached(5)
 def live():
     return q("""
         SELECT DISTINCT ON (vp.vehicle_id)
@@ -86,12 +206,14 @@ def live():
 
 
 @app.get("/api/routes")
+@cached(300)
 def routes():
     return q("SELECT route_id, route_short_name, route_long_name, route_color FROM routes ORDER BY route_short_name")
 
 
 @app.get("/api/routes/{route_id}/shape")
-def route_shape(route_id: str):
+@cached(3600)
+def route_shape(route_id: str = ID()):
     rows = q("""
         WITH s AS (SELECT shape_id, count(*) n FROM trips WHERE route_id = %(r)s AND shape_id IS NOT NULL
                    GROUP BY shape_id ORDER BY n DESC LIMIT 2)
@@ -103,7 +225,11 @@ def route_shape(route_id: str):
 
 # ── Ghost buses: scheduled to be running right now, but nothing in the feed ──────────
 @app.get("/api/ghosts")
+@cached(10)
 def ghosts():
+    if not feed_fresh():
+        return {"scheduled_now": None, "ghost_count": 0, "ghosts": [], "feed_down": True,
+                "warning": "Live bus data is delayed right now, so ghost alerts are paused. Showing scheduled times."}
     now = datetime.now(timezone.utc)
     (d0, s0, _), (d1, s1, _) = service_clock(now)
     rows = q("""
@@ -131,11 +257,13 @@ def ghosts():
     warning = None
     if scheduled and len(missing) / scheduled > 0.6:
         warning = "Most scheduled trips are missing — check that realtime trip_ids match the static GTFS."
-    return {"scheduled_now": scheduled, "ghost_count": len(missing), "ghosts": missing, "warning": warning}
+    return {"scheduled_now": scheduled, "ghost_count": len(missing), "ghosts": missing, "warning": warning,
+            "feed_down": False}
 
 
 # ── Reliability leaderboard (reads the continuous aggregate) ─────────────────────
 @app.get("/api/reliability")
+@cached(30)
 def reliability(hours: float = Query(3, gt=0, le=168)):
     rows = q("""
         SELECT c.route_id, r.route_short_name, r.route_long_name,
@@ -160,7 +288,8 @@ def reliability(hours: float = Query(3, gt=0, le=168)):
 
 
 @app.get("/api/routes/{route_id}/timeline")
-def route_timeline(route_id: str, hours: float = Query(6, gt=0, le=168)):
+@cached(30)
+def route_timeline(route_id: str = ID(), hours: float = Query(6, gt=0, le=168)):
     return q("""
         SELECT bucket, sum(arrivals)::int AS arrivals, sum(bunched)::int AS bunched,
                sum(long_gaps)::int AS long_gaps, avg(avg_headway_s) AS avg_headway_s,
@@ -173,13 +302,15 @@ def route_timeline(route_id: str, hours: float = Query(6, gt=0, le=168)):
 
 # ── Leave-now planner ───────────────────────────────────────────────────────────
 @app.get("/api/stops/search")
-def stop_search(q_: str = Query(..., alias="q", min_length=2)):
+@cached(60)
+def stop_search(q_: str = Query(..., alias="q", min_length=2, max_length=60)):
     return q("SELECT stop_id, stop_name, lat, lon FROM stops WHERE stop_name ILIKE %(p)s OR stop_id = %(s)s "
              "ORDER BY stop_name LIMIT 15", {"p": f"%{q_}%", "s": q_})
 
 
 @app.get("/api/stops/near")
-def stops_near(lat: float, lon: float, limit: int = 8):
+def stops_near(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+               limit: int = Query(8, ge=1, le=50)):
     return q("""
         SELECT stop_id, stop_name, lat, lon,
                round((111000 * sqrt(power(lat - %(lat)s, 2) + power((lon - %(lon)s) * cos(radians(%(lat)s)), 2)))::numeric) AS meters
@@ -188,12 +319,14 @@ def stops_near(lat: float, lon: float, limit: int = 8):
 
 
 @app.get("/api/stops/{stop_id}/leave")
-def leave_now(stop_id: str, walk_min: int = Query(5, ge=0, le=60)):
+@cached(10)
+def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
     """Next buses at a stop, adjusted by each bus's live delay (or the stop's usual lateness)."""
     stop = q("SELECT stop_id, stop_name, lat, lon FROM stops WHERE stop_id = %(s)s", {"s": stop_id})
     if not stop:
         raise HTTPException(404, "Unknown stop")
     now = datetime.now(timezone.utc)
+    live_ok = feed_fresh()
     out = []
     for d, now_s, midnight in service_clock(now):
         rows = q("""
@@ -228,7 +361,7 @@ def leave_now(stop_id: str, walk_min: int = Query(5, ge=0, le=60)):
             sched = midnight + timedelta(seconds=r["arrival_s"])
             if r["vehicle_id"]:
                 delay, basis = (r["live_delay_s"] or 0), "live"
-            elif now_s > r["start_s"] + 300:
+            elif live_ok and now_s > r["start_s"] + 300:
                 delay, basis = None, "ghost"      # should be on the road by now but isn't reporting
             else:
                 delay, basis = (r["usual_p80_delay_s"] or 0), "history" if r["usual_p80_delay_s"] else "schedule"
@@ -247,12 +380,13 @@ def leave_now(stop_id: str, walk_min: int = Query(5, ge=0, le=60)):
             })
     out.sort(key=lambda x: x["eta"] or x["scheduled"])
     catchable = [x for x in out if x["leave_at"] and x["leave_at"] >= now]
-    return {"stop": stop[0], "now": now, "walk_min": walk_min,
+    return {"stop": stop[0], "now": now, "walk_min": walk_min, "live_ok": live_ok,
             "recommendation": catchable[0] if catchable else None, "arrivals": out[:12]}
 
 
 # ── Under the hood: Tiger Data stats for the demo ────────────────────────────────
 @app.get("/api/tiger")
+@cached(60)
 def tiger():
     stats = {}
     for ht in ("vehicle_positions", "stop_arrivals"):

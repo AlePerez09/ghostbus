@@ -141,11 +141,14 @@ def live_loop(conn, tracker, sim, step=POLL_SECONDS, stop=None, log=print, on_ti
             pos, arr = tracker.process(sim.tick(t, tracker))
             tracker.write(pos, arr)
             log(f"{t.astimezone(TZ):%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
-            if on_tick:
-                on_tick(len(pos), len(arr))
+        except psycopg.OperationalError:
+            raise                       # connection lost: let the supervisor reconnect
         except Exception as ex:
             conn.rollback()
             log(f"simulator error: {ex}")
+            pos = arr = []
+        if on_tick:
+            on_tick(len(pos), len(arr))  # may raise RestartFeed on purpose
         wait = max(1.0, step - (time.time() - started))
         if stop:
             stop.wait(wait)
