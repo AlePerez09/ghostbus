@@ -40,7 +40,7 @@ def lateness_phrase(delay_s):
 
 def predict(*, live: bool, current_delay_s: float | None, minutes_away: float | None, stops_away: int | None,
             profile: dict | None, ghost_risk: float | None = None, ghost_days: tuple | None = None,
-            started: bool = True) -> Prediction:
+            started: bool = True, scale: float = 1.0) -> Prediction:
     prof = profile if profile and profile.get("n", 0) >= 5 else None
     p10, p50, p90 = ((prof["p10"], prof["p50"], prof["p90"]) if prof
                      else (DEFAULT_PROFILE["p10"], DEFAULT_PROFILE["p50"], DEFAULT_PROFILE["p90"]))
@@ -52,6 +52,7 @@ def predict(*, live: bool, current_delay_s: float | None, minutes_away: float | 
         center = w * current_delay_s + (1 - w) * p50
         spread = max(60.0, (p90 - p10) / 2)
         half = MIN_HALF_WIDTH_S + (1 - w) * spread + GROWTH_PER_MIN_S * m
+        half *= scale                                       # self-calibration (see learn.calibrate)
         lo, hi = center - 0.8 * half, center + 1.2 * half     # buses run late more often than early
         where = ("almost here" if not stops_away or stops_away <= 0
                  else "1 stop away" if stops_away == 1 else f"{stops_away} stops away")

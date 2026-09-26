@@ -143,6 +143,8 @@ def _learning_loop():
                     _last_job["outcomes"] = now
                     n = learn.record_trip_outcomes(c, lookback_s=1800)
                     log(f"learning: recorded {n} trip outcomes")
+                    for band, (old, new, n) in learn.calibrate(c).items():
+                        log(f"self-calibration: {band}-min band window scale {old} -> {new} ({n} graded)")
             first = False
         except Exception as ex:
             log(f"learning job failed (feed unaffected): {ex}")

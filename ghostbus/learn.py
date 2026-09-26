@@ -62,6 +62,11 @@ for _v, _start in (("delay_profile_hourly", "15 days"), ("route_profile_hourly",
         f"ALTER MATERIALIZED VIEW {_v} SET (timescaledb.materialized_only = false)",
     ]
 SCHEMA += [
+    # self-calibration: remember which width scale each prediction used, and how far off it was
+    # relative to its own window (|z| <= 1 means the bus arrived inside the window)
+    "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scale REAL DEFAULT 1",
+    "ALTER TABLE prediction_results ADD COLUMN IF NOT EXISTS z REAL",
+    "ALTER TABLE prediction_results ADD COLUMN IF NOT EXISTS scale REAL",
     "SELECT add_retention_policy('predictions', INTERVAL '14 days', if_not_exists => TRUE)",
     "SELECT add_retention_policy('prediction_results', INTERVAL '90 days', if_not_exists => TRUE)",
     "SELECT add_retention_policy('trip_outcomes', INTERVAL '120 days', if_not_exists => TRUE)",
@@ -247,17 +252,19 @@ def record_predictions(conn):
         cand.append((r, stop_id, seq, sched, (arr_s - r["cur_s"]) / 60))
     profs = profiles(run, [(c[1], c[0]["route_id"], local_hour(c[3])) for c in cand])
     ghosts = ghost_risks(run, [(c[0]["route_id"], c[0]["direction_id"], c[0]["start_s"]) for c in cand])
+    scales = get_scales(run)
     out = []
     for r, stop_id, seq, sched, mins in cand:
         days = ghosts.get((r["route_id"], r["direction_id"], r["start_s"]))
         p = predict(live=True, current_delay_s=r["delay_s"], minutes_away=mins, stops_away=seq - r["seq"],
                     profile=profs.get((stop_id, r["route_id"], local_hour(sched))),
-                    ghost_risk=risk_from(days), ghost_days=days)
+                    ghost_risk=risk_from(days), ghost_days=days,
+                    scale=scales.get(horizon_band(mins), 1.0))
         out.append((now, r["trip_id"], stop_id, r["route_id"], horizon_band(mins), True,
                     sched + timedelta(seconds=p.delay_s), sched + timedelta(seconds=p.lo_s),
-                    sched + timedelta(seconds=p.hi_s)))
+                    sched + timedelta(seconds=p.hi_s), scales.get(horizon_band(mins), 1.0)))
     with conn.cursor() as cur:
-        with cur.copy("COPY predictions (made_at, trip_id, stop_id, route_id, horizon_band, live, predicted, lo, hi)"
+        with cur.copy("COPY predictions (made_at, trip_id, stop_id, route_id, horizon_band, live, predicted, lo, hi, scale)"
                       " FROM STDIN") as cp:
             for row in out:
                 cp.write_row(row)
@@ -275,10 +282,58 @@ def resolve_predictions(conn):
             AND a.trip_id = p.trip_id AND a.stop_id = p.stop_id
             AND a.time BETWEEN p.made_at - INTERVAL '5 minutes' AND p.made_at + INTERVAL '3 hours'
           RETURNING a.time AS actual, p.*)
-        INSERT INTO prediction_results (time, made_at, route_id, stop_id, horizon_band, live, error_s, in_window)
+        INSERT INTO prediction_results (time, made_at, route_id, stop_id, horizon_band, live, error_s, in_window, z, scale)
         SELECT actual, made_at, route_id, stop_id, horizon_band, live,
-               extract(epoch FROM actual - predicted)::int, actual BETWEEN lo AND hi
+               extract(epoch FROM actual - predicted)::int, actual BETWEEN lo AND hi,
+               CASE WHEN actual >= predicted
+                    THEN extract(epoch FROM actual - predicted) / nullif(extract(epoch FROM hi - predicted), 0)
+                    ELSE extract(epoch FROM predicted - actual) / nullif(extract(epoch FROM predicted - lo), 0) END,
+               coalesce(scale, 1)
         FROM done
     """)
     conn.commit()
     return cur.rowcount or 0
+
+
+# ── self-calibration ─────────────────────────────────────────────────────────────
+TARGET = 0.80            # we want 80% of buses to land inside the window
+MIN_SAMPLES = 40
+SCALE_RANGE = (0.5, 4.0)
+
+
+def get_scales(run):
+    """Current width scale per horizon band, e.g. {5: 1.3, 10: 1.1, ...}. Missing bands = 1.0."""
+    import json
+    rows = run("SELECT value, updated FROM meta WHERE key = 'calibration'")
+    if not rows:
+        return {}
+    return {int(k): float(v) for k, v in json.loads(rows[0]["value"]).items()}
+
+
+def calibrate(conn):
+    """Look at the last 6 hours of graded predictions. For each 'how far ahead' band, find the window
+    width that WOULD have caught 80% of buses, and move halfway toward it (so it adjusts smoothly)."""
+    import json
+    run = _dict_run(conn)
+    current = get_scales(run)
+    rows = run("""
+        SELECT horizon_band, count(*) AS n,
+               percentile_cont(%(t)s) WITHIN GROUP (ORDER BY abs(z) * scale) AS needed
+        FROM prediction_results
+        WHERE time > now() - INTERVAL '6 hours' AND live AND z IS NOT NULL AND scale IS NOT NULL
+        GROUP BY horizon_band
+    """, {"t": TARGET})
+    changes = {}
+    for r in rows:
+        if r["n"] < MIN_SAMPLES or r["needed"] is None:
+            continue
+        old = current.get(r["horizon_band"], 1.0)
+        new = min(SCALE_RANGE[1], max(SCALE_RANGE[0], 0.5 * old + 0.5 * float(r["needed"])))
+        current[r["horizon_band"]] = round(new, 3)
+        changes[r["horizon_band"]] = (round(old, 2), round(new, 2), r["n"])
+    if changes:
+        conn.execute("INSERT INTO meta (key, value, updated) VALUES ('calibration', %s, now()) "
+                     "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated = now()",
+                     (json.dumps(current),))
+        conn.commit()
+    return changes

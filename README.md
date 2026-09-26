@@ -144,6 +144,8 @@ Before the demo, run `python -m ghostbus.compress_now --older-than 60` so the co
 
 Every answer carries **one confidence word** (Very likely / Likely / Rough estimate / May not come) and a **"Why?"** in one or two sentences.
 
+**We correct ourselves.** Every 10 minutes the server looks at the last 6 hours of graded predictions. For each "how far ahead" band, it finds the window width that *would* have caught 80% of buses and moves halfway toward it, so windows widen when buses are unpredictable and tighten when they're steady (`learn.calibrate`).
+
 **We grade ourselves.** Every 5 minutes the server predicts ahead for a sample of live buses using the same code the app uses (`predictions`), then matches each prediction to the real arrival (`prediction_results`). The Stats tab shows how often buses landed inside our window, rolled up by the `accuracy_hourly` continuous aggregate. Our goal is 80%, and in a backtest on simulated history the windows caught about 90%.
 
 ## Reliability, security and privacy

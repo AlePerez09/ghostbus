@@ -20,7 +20,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from . import feed, learn
-from .predict import predict
+from .predict import horizon_band, predict
 from .config import DATABASE_URL, TZ
 
 
@@ -357,6 +357,7 @@ def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
 
     profs = learn.profiles(q, [(stop_id, r["route_id"], learn.local_hour(sched)) for r, sched, _ in cands])
     ghosts = learn.ghost_risks(q, [(r["route_id"], r["direction_id"], r["start_s"]) for r, _, _ in cands])
+    scales = calibration()
     out = []
     for r, sched, now_s in cands:
         is_live = bool(r["vehicle_id"]) and live_ok
@@ -367,7 +368,8 @@ def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
         p = predict(live=is_live, current_delay_s=r["live_delay_s"] if is_live else None,
                     minutes_away=mins_away, stops_away=stops_away,
                     profile=profs.get((stop_id, r["route_id"], learn.local_hour(sched))),
-                    ghost_risk=learn.risk_from(days), ghost_days=days, started=now_s > r["start_s"])
+                    ghost_risk=learn.risk_from(days), ghost_days=days, started=now_s > r["start_s"],
+                    scale=scales.get(horizon_band(mins_away), 1.0) if mins_away is not None else 1.0)
         why, confidence = list(p.why), p.confidence
         if missing:
             late_by = round((now_s - r["start_s"]) / 60)
@@ -397,6 +399,14 @@ def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
             "leave_rule": "We time your walk for the early end of the window, so the bus won't beat you there."}
 
 
+@cached(60)
+def calibration():
+    try:
+        return learn.get_scales(q)
+    except Exception:
+        return {}
+
+
 @app.get("/api/accuracy")
 @cached(120)
 def accuracy(days: int = Query(7, ge=1, le=30), route_id: str | None = Query(None, max_length=64)):
@@ -417,8 +427,14 @@ def accuracy(days: int = Query(7, ge=1, le=30), route_id: str | None = Query(Non
              for r in rows]
     total = sum(b["n"] for b in bands)
     in_win = sum((b["in_window_pct"] or 0) * b["n"] for b in bands) / total if total else None
+    cal = q("SELECT updated FROM meta WHERE key = 'calibration'")
+    recent = q("""SELECT count(*)::int AS n, count(*) FILTER (WHERE in_window)::int AS hit FROM prediction_results
+                  WHERE time > now() - INTERVAL '2 hours' AND live""")[0]
     return {"days": days, "graded": total, "in_window_pct": round(in_win) if in_win is not None else None,
-            "bands": bands, "goal_in_window_pct": 80}
+            "bands": bands, "goal_in_window_pct": 80,
+            "last_2h_in_window_pct": round(100 * recent["hit"] / recent["n"]) if recent["n"] else None,
+            "last_2h_graded": recent["n"],
+            "calibration": calibration(), "calibrated_at": cal[0]["updated"] if cal else None}
 
 
 # ── Under the hood: Tiger Data stats for the demo ────────────────────────────────

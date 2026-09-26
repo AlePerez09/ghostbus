@@ -366,7 +366,9 @@ async function refreshStats() {
         <div class="bar"><i style="width:${b.in_window_pct}%"></i></div>
         <span class="big" style="font-size:14px">${b.in_window_pct}%</span></div>
         <div class="muted" style="margin:-2px 0 8px">Off by ${b.avg_error_min} min on average</div>`).join('')}
-      <div class="muted">We check ourselves automatically: every few minutes we record predictions, then compare them with when the bus really arrived.</div></div>`;
+      ${acc.last_2h_graded >= 30 ? `<div class="sub" style="margin-top:6px">Last 2 hours: <b>${acc.last_2h_in_window_pct}%</b></div>` : ''}
+      <div class="muted" style="margin-top:8px">We check ourselves automatically: every few minutes we record predictions and compare them with when the bus really arrived.
+      Every 10 minutes the app then <b>widens or narrows its windows</b> to stay near ${acc.goal_in_window_pct}%${acc.calibrated_at ? ` (last adjusted ${Math.max(1, Math.round((Date.now() - new Date(acc.calibrated_at)) / 60000))} min ago)` : ''}.</div></div>`;
   } else {
     html += `<div class="card sub">We grade our own predictions against real arrivals. ${acc && acc.graded ? `${acc.graded} checked so far;` : ''} results appear once we've checked at least 30.</div>`;
   }
