@@ -1,10 +1,6 @@
 # 👻 Ghost Bus
 
-<<<<<<< HEAD
-**Is my bus actually coming?** Ghost Bus tracks every Miami-Dade bus in real time and catches the three things that ruin a commute:
-=======
 **Is my bus actually coming?** Ghost Bus tracks buses across South Florida (Miami-Dade Transit, Broward County Transit, Palm Tran and Key West Transit) in real time and catches the three things that ruin a commute:
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 
 - **Ghost buses**: trips that are on the schedule but have no bus sending GPS.
 - **Bunching**: two buses arriving within 3 minutes of each other, followed by a long gap.
@@ -64,19 +60,12 @@ python -m ghostbus            # open http://localhost:8000
 
 On Windows you can just double-click **`Ghost Bus.bat`** instead.
 
-<<<<<<< HEAD
-On first boot against an empty database, the app does everything by itself: it creates the hypertables, compression and continuous aggregates, loads the Miami-Dade schedule (falling back to a built-in sample if the county site is down), generates 3 hours of history, and then keeps the bus feed running. It uses the realtime feed when `GTFS_RT_API_KEY` is set and simulated buses otherwise. The top-bar chip shows **Live** or **Demo data**, so it's always clear which one you're seeing.
-
-**Only one server ever writes bus data.** A database lock makes sure of that. If the app runs on Render and on your laptop at the same time, the second copy waits on standby and just shows the data. If the first copy dies, the second takes over within a minute.
-
-=======
 On first boot against an empty database, the app does everything by itself: it creates the hypertables, compression and continuous aggregates, loads the Miami-Dade, Broward, Palm Beach and Monroe schedules (skipping any county whose site is down, and falling back to a built-in sample if all of them are), generates 3 hours of history, and then keeps the bus feed running. It uses the realtime feed when `GTFS_RT_API_KEY` is set and simulated buses otherwise. The top-bar chip shows **Live** or **Demo data**, so it's always clear which one you're seeing.
 
 **Only one server ever writes bus data.** A database lock makes sure of that. If the app runs on Render and on your laptop at the same time, the second copy waits on standby and just shows the data. If the first copy dies, the second takes over within a minute.
 
 **Counties.** IDs from Broward (`bct:`), Palm Tran (`pt:`) and Key West (`kw:`) are prefixed so they never collide with Miami-Dade's. Live GPS currently comes from Miami-Dade only; the other counties show their schedules, and they join ghost detection automatically once their realtime URL is set (`BCT_RT_URL`, `PT_RT_URL`, `KW_RT_URL`; see `.env.example`). In demo mode, buses are simulated in all four counties.
 
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 ## Deploy it (public link for phones, about 5 minutes)
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AlePerez09/ghostbus)

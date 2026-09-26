@@ -24,11 +24,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 
 from . import learn, load_static, setup_db
-<<<<<<< HEAD
-from .config import DATABASE_URL, GTFS_RT_API_KEY, GTFS_STATIC_URL, TZ
-=======
 from .config import AGENCIES, DATABASE_URL, RT_AGENCIES, TZ
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 from .tracker import Tracker
 
 FEED_MODE = os.environ.get("FEED_MODE", "auto").lower()
@@ -57,16 +53,12 @@ MIGRATIONS = [
     # Keep raw GPS pings 14 days and stop events 90 days; the rollups (continuous aggregates) are kept forever.
     "SELECT add_retention_policy('vehicle_positions', INTERVAL '14 days', if_not_exists => TRUE)",
     "SELECT add_retention_policy('stop_arrivals', INTERVAL '90 days', if_not_exists => TRUE)",
-<<<<<<< HEAD
-]
-=======
     # Multi-county: which agency each route/trip belongs to (older databases were Miami-Dade only).
     "ALTER TABLE routes ADD COLUMN IF NOT EXISTS agency TEXT DEFAULT 'mdt'",
     "ALTER TABLE trips ADD COLUMN IF NOT EXISTS agency TEXT DEFAULT 'mdt'",
     "ALTER TABLE trip_windows ADD COLUMN IF NOT EXISTS agency TEXT DEFAULT 'mdt'",
 ]
 AGENCY_KEYS = ",".join(sorted(a["key"] for a in AGENCIES))
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 
 
 def set_meta(conn, key, value):
@@ -75,12 +67,6 @@ def set_meta(conn, key, value):
 
 
 def load_schedule(allow_sample=True):
-<<<<<<< HEAD
-    """Load the county GTFS. Falls back to the built-in sample only when there's no schedule at all."""
-    try:
-        load_static.load(GTFS_STATIC_URL)
-        source = "county"
-=======
     """Load every county's GTFS. Falls back to the built-in sample only when there's no schedule at all.
     allow_sample=False (refreshes) keeps the current schedule unless every agency downloads."""
     try:
@@ -89,7 +75,6 @@ def load_schedule(allow_sample=True):
             log(f"Schedule download failed for {', '.join(failed)}; loaded {', '.join(loaded)}.")
         source = "county"
         agencies = ",".join(sorted(loaded))
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
     except Exception as ex:
         if not allow_sample:
             log(f"Schedule refresh failed ({ex}); keeping the current schedule.")
@@ -100,17 +85,11 @@ def load_schedule(allow_sample=True):
         make_fake(path)
         load_static.load(path)
         source = "sample"
-<<<<<<< HEAD
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-        set_meta(conn, "schedule_loaded_at", datetime.now(timezone.utc).isoformat())
-        set_meta(conn, "schedule_source", source)
-=======
         agencies = "mdt"
     with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
         set_meta(conn, "schedule_loaded_at", datetime.now(timezone.utc).isoformat())
         set_meta(conn, "schedule_source", source)
         set_meta(conn, "schedule_agencies", agencies)
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
     return True
 
 
@@ -131,10 +110,6 @@ def bootstrap():
             routes = lock_conn.execute("SELECT count(*) FROM routes").fetchone()[0]
             if routes == 0:
                 status["phase"] = "loading schedule"
-<<<<<<< HEAD
-                log("Loading the Miami-Dade schedule...")
-                load_schedule(allow_sample=True)
-=======
                 log("Loading the bus schedules (Miami-Dade, Broward, Palm Beach, Monroe)...")
                 load_schedule(allow_sample=True)
             elif (lock_conn.execute("SELECT value FROM meta WHERE key = 'schedule_agencies'").fetchone()
@@ -142,7 +117,6 @@ def bootstrap():
                 status["phase"] = "loading schedule"
                 log("Agency list changed; loading all county schedules...")
                 load_schedule(allow_sample=False)
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
             elif not lock_conn.execute("SELECT 1 FROM meta WHERE key = 'schedule_loaded_at'").fetchone():
                 set_meta(lock_conn, "schedule_loaded_at", datetime.now(timezone.utc).isoformat())
         finally:
@@ -250,11 +224,7 @@ def run():
                 booted = True
             mode = FEED_MODE
             if mode == "auto":
-<<<<<<< HEAD
-                mode = "live" if GTFS_RT_API_KEY else "sim"
-=======
                 mode = "live" if RT_AGENCIES else "sim"
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
             status["mode"] = mode
             if mode == "off":
                 status["phase"] = "ready (feed off)"

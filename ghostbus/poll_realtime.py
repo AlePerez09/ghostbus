@@ -1,12 +1,8 @@
 """Poll a GTFS-realtime VehiclePositions feed forever and store it in Tiger Data.
 
 Usage: python -m ghostbus.poll_realtime
-<<<<<<< HEAD
-Needs GTFS_RT_API_KEY in .env (Miami-Dade realtime is served by Swiftly).
-=======
 Polls every agency in config.AGENCIES that has a realtime URL (Miami-Dade: set GTFS_RT_API_KEY;
 others: BCT_RT_URL / PT_RT_URL / KW_RT_URL, plus *_RT_KEY if the feed needs one).
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 """
 import time
 from datetime import datetime, timezone
@@ -15,21 +11,12 @@ import psycopg
 import requests
 from google.transit import gtfs_realtime_pb2
 
-<<<<<<< HEAD
-from .config import DATABASE_URL, GTFS_RT_API_KEY, GTFS_RT_AUTH_HEADER, GTFS_RT_VEHICLES_URL, POLL_SECONDS
-=======
 from .config import DATABASE_URL, POLL_SECONDS, RT_AGENCIES
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 from .tracker import Obs, Tracker
 
 STATUS = {0: "INCOMING_AT", 1: "STOPPED_AT", 2: "IN_TRANSIT_TO"}
 
 
-<<<<<<< HEAD
-def fetch():
-    headers = {GTFS_RT_AUTH_HEADER: GTFS_RT_API_KEY} if GTFS_RT_API_KEY else {}
-    resp = requests.get(GTFS_RT_VEHICLES_URL, headers=headers, timeout=20)
-=======
 def fetch(log=print):
     """Poll every realtime agency. One agency failing doesn't drop the others; if all fail, re-raise."""
     out, errors = [], []
@@ -48,7 +35,6 @@ def fetch_agency(a):
     p = lambda v: f"{a['prefix']}{v}" if v else None     # same ID prefix the schedule loader used
     headers = {a["rt_header"]: a["rt_key"]} if a["rt_key"] else {}
     resp = requests.get(a["rt_url"], headers=headers, timeout=20)
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
     resp.raise_for_status()
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(resp.content)
@@ -62,15 +48,9 @@ def fetch_agency(a):
         trip = v.trip if v.HasField("trip") else None
         out.append(Obs(
             time=ts,
-<<<<<<< HEAD
-            vehicle_id=(v.vehicle.id or v.vehicle.label or e.id),
-            trip_id=(trip.trip_id or None) if trip else None,
-            route_id=(trip.route_id or None) if trip else None,
-=======
             vehicle_id=p(v.vehicle.id or v.vehicle.label or e.id),
             trip_id=p(trip.trip_id) if trip else None,
             route_id=p(trip.route_id) if trip else None,
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
             direction_id=trip.direction_id if trip and trip.HasField("direction_id") else None,
             lat=v.position.latitude, lon=v.position.longitude,
             bearing=v.position.bearing if v.position.HasField("bearing") else None,
@@ -91,11 +71,7 @@ def poll_loop(conn, tracker, stop=None, log=print, on_tick=None):
         wait = POLL_SECONDS
         pos = arr = []
         try:
-<<<<<<< HEAD
-            obs = fetch()
-=======
             obs = fetch(log)
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
             pos, arr = tracker.process(obs)
             tracker.write(pos, arr)
             failures = 0
@@ -127,13 +103,6 @@ def poll_loop(conn, tracker, stop=None, log=print, on_tick=None):
 
 
 def main():
-<<<<<<< HEAD
-    if not GTFS_RT_API_KEY:
-        print("Warning: GTFS_RT_API_KEY is empty; the request will probably be rejected.")
-    with psycopg.connect(DATABASE_URL) as conn:
-        tracker = Tracker(conn)
-        print(f"Polling {GTFS_RT_VEHICLES_URL} every {POLL_SECONDS}s. Ctrl+C to stop.")
-=======
     if not RT_AGENCIES:
         print("No realtime feeds configured (set GTFS_RT_API_KEY for Miami-Dade); nothing to poll.")
         return
@@ -141,7 +110,6 @@ def main():
         tracker = Tracker(conn)
         names = ", ".join(a["name"] for a in RT_AGENCIES)
         print(f"Polling {names} every {POLL_SECONDS}s. Ctrl+C to stop.")
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
         poll_loop(conn, tracker)
 
 

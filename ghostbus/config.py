@@ -25,8 +25,6 @@ GTFS_RT_API_KEY = os.environ.get("GTFS_RT_API_KEY", "")
 # Swiftly expects the key in the Authorization header; other agencies use a query param.
 GTFS_RT_AUTH_HEADER = os.environ.get("GTFS_RT_AUTH_HEADER", "Authorization")
 
-<<<<<<< HEAD
-=======
 
 # Every agency Ghost Bus loads. Each agency numbers its own routes/stops/trips, so all IDs except
 # Miami-Dade's get a prefix ("bct:1") to keep them from colliding. Miami-Dade stays unprefixed so
@@ -54,6 +52,5 @@ AGENCIES = [
 ROUTE_LABEL = {"mdt": "", "bct": "BCT", "pt": "Palm Tran", "kw": "Key West"}
 RT_AGENCIES = [a for a in AGENCIES if a["rt_url"]]
 
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "15"))
 TZ = ZoneInfo(os.environ.get("AGENCY_TZ", "America/New_York"))

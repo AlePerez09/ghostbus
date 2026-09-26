@@ -191,12 +191,8 @@ def record_trip_outcomes(conn, lookback_s=1800):
             SELECT trip_id, route_id, direction_id, start_s, end_s FROM trip_windows
             WHERE service_id IN (SELECT service_id FROM active_services(%s))
               AND end_s + 600 BETWEEN %s AND %s
-<<<<<<< HEAD
-        """, (d, now_s - lookback_s, now_s)).fetchall()
-=======
               AND agency IN (SELECT DISTINCT agency FROM trips WHERE trip_id = ANY(%s))  -- agencies with live data
         """, (d, now_s - lookback_s, now_s, list(seen))).fetchall()
->>>>>>> f967724 (Added Palm Beach, Broward, and Monroe Counties)
         for trip_id, route_id, direction_id, start_s, end_s in due:
             start = midnight + timedelta(seconds=start_s)
             end = midnight + timedelta(seconds=end_s)
