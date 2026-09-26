@@ -72,6 +72,14 @@ class Sim:
 
     def tick(self, t: datetime, tracker: Tracker):
         active = self.active_trips(t)
+        self.ticks = getattr(self, "ticks", 0) + 1
+        if self.ticks % 40 == 0:                     # every ~10 simulated minutes
+            ids = {tid for tid, _, _ in active}
+            tracker.prune(ids, t)
+            for tid in [tid for tid in self.trip_delay if tid not in ids]:
+                del self.trip_delay[tid]
+            for d in [d for d in self.windows_cache if d < (t.astimezone(TZ).date() - timedelta(days=1))]:
+                del self.windows_cache[d]
         self.maybe_incident(t, {r for _, r, _ in active})
         tracker.preload_trips(tid for tid, _, _ in active)
         obs = []
@@ -101,6 +109,50 @@ class Sim:
         return obs
 
 
+def refresh_aggregates():
+    # CALL refresh_continuous_aggregate can't run inside a transaction, so use autocommit.
+    with psycopg.connect(DATABASE_URL, autocommit=True) as ac:
+        for view in ("route_reliability_15m", "stop_delay_hourly"):
+            ac.execute(f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)")
+
+
+def backfill(conn, tracker, sim, hours, step=POLL_SECONDS, log=print):
+    """Generate `hours` of history ending now, as fast as the database accepts it."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    t = now - timedelta(hours=hours)
+    total_p = total_a = 0
+    while t < now:
+        pos, arr = tracker.process(sim.tick(t, tracker))
+        tracker.write(pos, arr, bulk=True)
+        total_p, total_a = total_p + len(pos), total_a + len(arr)
+        if t.minute % 30 == 0 and t.second < step:
+            log(f"  backfill {t.astimezone(TZ):%a %H:%M}  positions={total_p:,}  arrivals={total_a:,}")
+        t += timedelta(seconds=step)
+    log(f"Backfill done: {total_p:,} positions, {total_a:,} stop arrivals.")
+    refresh_aggregates()
+
+
+def live_loop(conn, tracker, sim, step=POLL_SECONDS, stop=None, log=print, on_tick=None):
+    """Simulate in real time until `stop` (a threading.Event) is set."""
+    while not (stop and stop.is_set()):
+        started = time.time()
+        t = datetime.now(timezone.utc).replace(microsecond=0)
+        try:
+            pos, arr = tracker.process(sim.tick(t, tracker))
+            tracker.write(pos, arr)
+            log(f"{t.astimezone(TZ):%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
+            if on_tick:
+                on_tick(len(pos), len(arr))
+        except Exception as ex:
+            conn.rollback()
+            log(f"simulator error: {ex}")
+        wait = max(1.0, step - (time.time() - started))
+        if stop:
+            stop.wait(wait)
+        else:
+            time.sleep(wait)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", type=float, default=0, help="hours of history to generate first")
@@ -110,31 +162,11 @@ def main():
 
     with psycopg.connect(DATABASE_URL) as conn:
         tracker, sim = Tracker(conn), Sim(conn)
-        now = datetime.now(timezone.utc).replace(microsecond=0)
         if args.backfill:
-            t = now - timedelta(hours=args.backfill)
-            total_p = total_a = 0
-            while t < now:
-                pos, arr = tracker.process(sim.tick(t, tracker))
-                tracker.write(pos, arr, bulk=True)
-                total_p, total_a = total_p + len(pos), total_a + len(arr)
-                if t.minute % 30 == 0 and t.second < args.step:
-                    print(f"  {t.astimezone(TZ):%a %H:%M}  positions={total_p:,}  arrivals={total_a:,}")
-                t += timedelta(seconds=args.step)
-            print(f"Backfill done: {total_p:,} positions, {total_a:,} stop arrivals.")
-            # Materialize the rollups now so the dashboard is fast immediately (CALL needs autocommit).
-            with psycopg.connect(DATABASE_URL, autocommit=True) as ac:
-                for view in ("route_reliability_15m", "stop_delay_hourly"):
-                    ac.execute(f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)")
-            print("Continuous aggregates refreshed.")
+            backfill(conn, tracker, sim, args.backfill, args.step)
         if args.live:
             print(f"Simulating live every {args.step}s. Ctrl+C to stop.")
-            while True:
-                t = datetime.now(timezone.utc).replace(microsecond=0)
-                pos, arr = tracker.process(sim.tick(t, tracker))
-                tracker.write(pos, arr)
-                print(f"{t.astimezone(TZ):%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
-                time.sleep(args.step)
+            live_loop(conn, tracker, sim, args.step)
 
 
 if __name__ == "__main__":

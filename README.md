@@ -40,15 +40,42 @@ GTFS-realtime (every 15s) ─► poll_realtime.py ─► tracker.py ─┼─►
 
 ---
 
-## Windows quick start (double-click)
+## Use it (riders)
 
-1. **`1-setup.bat`** creates the Python environment, installs packages, asks for your Tiger Cloud URL, builds the database and loads the schedule.
-2. **`2-start.bat`** starts the data feed and the dashboard, then opens http://localhost:8000.
-3. **`3-push-to-github.bat`** commits and pushes to GitHub, and never uploads `.env`.
+Open the Ghost Bus link on your phone, then **Add to Home Screen**:
+- **iPhone (Safari):** tap Share ⬆︎, then **Add to Home Screen**.
+- **Android (Chrome):** tap **Install** in the app bar, or use menu ⋮, then **Install app**.
 
-Mac/Linux, or if you prefer the terminal: follow the steps below.
+It opens full-screen like a normal app. **Near me** finds the stops around you and tells you when to leave, and **☆** saves stops like home or FIU. The page shell works offline, and data refreshes every 15 seconds.
 
-## Setup (about 15 minutes)
+## Run it (developers): one command
+
+Needs Python 3.10+ and a Tiger Cloud service URL.
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # paste your Tiger Cloud URL into DATABASE_URL
+python -m ghostbus            # open http://localhost:8000
+```
+
+On Windows you can just double-click **`Ghost Bus.bat`** instead.
+
+On first boot against an empty database, the app does everything by itself: it creates the hypertables, compression and continuous aggregates, loads the Miami-Dade schedule (falling back to a built-in sample if the county site is down), generates 3 hours of history, and then keeps the bus feed running. It uses the realtime feed when `GTFS_RT_API_KEY` is set and simulated buses otherwise. The top-bar chip shows **Live** or **Demo data**, so it's always clear which one you're seeing.
+
+**Only run one data feed per database.** If the app is deployed online, set `FEED_MODE=off` in your local `.env`.
+
+## Deploy it (public link for phones, about 5 minutes)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AlePerez09/ghostbus)
+
+1. Click the button, sign in to Render, and paste your Tiger Cloud URL as `DATABASE_URL`. Leave `GTFS_RT_API_KEY` blank until Swiftly approves your key.
+2. Render builds the app and gives you a URL like `https://ghostbus-xxxx.onrender.com`. That's the link riders install.
+3. Render's free plan pauses apps after 15 idle minutes. Ghost Bus pings itself every 10 minutes (using `RENDER_EXTERNAL_URL`), so the feed keeps running.
+
+Other hosts work too: use the included `Dockerfile`, which runs `python -m ghostbus` on `$PORT`.
+
+<details><summary>Manual step-by-step (the individual scripts)</summary>
+
 
 ### 1. Get the code
 
@@ -106,6 +133,8 @@ Before the demo, run `python -m ghostbus.compress_now --older-than 60` so the co
 
 ---
 
+</details>
+
 ## API
 
 | Endpoint | What it returns |
@@ -117,6 +146,7 @@ Before the demo, run `python -m ghostbus.compress_now --older-than 60` so the co
 | `GET /api/routes/{id}/shape` | Route line for the map |
 | `GET /api/stops/search?q=` / `GET /api/stops/near?lat=&lon=` | Find stops |
 | `GET /api/stops/{id}/leave?walk_min=5` | Next buses adjusted for delay, plus a "leave at" recommendation |
+| `GET /api/health` | Feed status: phase, live or simulated, last update |
 | `GET /api/tiger` | Hypertable sizes, compression ratio, and the raw-scan vs continuous-aggregate benchmark |
 
 **Reliability score** = `100 × (1 − share of bunched arrivals) × (1 − headway CV ÷ 2)`, where CV is the standard deviation of the gaps between buses divided by their average. 100 means evenly spaced buses with none bunched.

@@ -1,0 +1,18 @@
+# One-click deploy: https://render.com/deploy?repo=https://github.com/AlePerez09/ghostbus
+services:
+  - type: web
+    name: ghostbus
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m ghostbus
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL        # Tiger Cloud service URL (you'll be asked for it)
+        sync: false
+      - key: GTFS_RT_API_KEY     # Swiftly key; leave blank to run on simulated data
+        sync: false
+      - key: FEED_MODE
+        value: auto

@@ -55,7 +55,10 @@ def open_zip(src: str) -> zipfile.ZipFile:
 
 
 def main():
-    src = sys.argv[1] if len(sys.argv) > 1 else GTFS_STATIC_URL
+    load(sys.argv[1] if len(sys.argv) > 1 else GTFS_STATIC_URL)
+
+
+def load(src: str):
     z = open_zip(src)
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         cur.execute("TRUNCATE routes, stops, trips, stop_times, calendar, calendar_dates, shapes, trip_windows")
@@ -99,6 +102,7 @@ def main():
         print(f"  trip_windows: {cur.rowcount:,} rows")
         cur.execute("ANALYZE")
     print("Static GTFS loaded.")
+
 
 
 if __name__ == "__main__":

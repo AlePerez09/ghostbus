@@ -6,15 +6,26 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from . import feed
 from .config import DATABASE_URL, TZ
 
-app = FastAPI(title="Ghost Bus")
+
+@asynccontextmanager
+async def lifespan(_app):
+    feed.start()          # first-boot DB setup + bus data, in a background thread
+    yield
+    feed.stop()
+
+
+app = FastAPI(title="Ghost Bus", lifespan=lifespan)
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=True)
 WEB = Path(__file__).resolve().parent.parent / "web"
 app.mount("/static", StaticFiles(directory=WEB), name="static")
@@ -37,7 +48,23 @@ def service_clock(now: datetime):
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "index.html")
+    return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+# PWA files must be served from the site root so the service worker controls the whole app.
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(WEB / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(WEB / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/api/health")
+def health():
+    return {k: v for k, v in feed.status.items() if k != "log"} | {"recent_log": feed.status["log"][-5:]}
 
 
 # ── Live map ─────────────────────────────────────────────────────────────────

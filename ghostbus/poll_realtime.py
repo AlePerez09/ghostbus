@@ -46,23 +46,38 @@ def fetch():
     return out
 
 
+def poll_loop(conn, tracker, stop=None, log=print, on_tick=None):
+    """Poll the realtime feed until `stop` (a threading.Event) is set."""
+    while not (stop and stop.is_set()):
+        started = time.time()
+        try:
+            obs = fetch()
+            pos, arr = tracker.process(obs)
+            tracker.write(pos, arr)
+            ticks = getattr(tracker, "_ticks", 0) + 1
+            tracker._ticks = ticks
+            if ticks % 40 == 0:
+                tracker.prune({o.trip_id for o in obs if o.trip_id}, datetime.now(timezone.utc))
+            log(f"{datetime.now():%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
+            if on_tick:
+                on_tick(len(pos), len(arr))
+        except Exception as ex:  # keep polling through network blips
+            conn.rollback()
+            log(f"{datetime.now():%H:%M:%S}  poll error: {ex}")
+        wait = max(1.0, POLL_SECONDS - (time.time() - started))
+        if stop:
+            stop.wait(wait)
+        else:
+            time.sleep(wait)
+
+
 def main():
     if not GTFS_RT_API_KEY:
         print("Warning: GTFS_RT_API_KEY is empty; the request will probably be rejected.")
     with psycopg.connect(DATABASE_URL) as conn:
         tracker = Tracker(conn)
         print(f"Polling {GTFS_RT_VEHICLES_URL} every {POLL_SECONDS}s. Ctrl+C to stop.")
-        while True:
-            started = time.time()
-            try:
-                obs = fetch()
-                pos, arr = tracker.process(obs)
-                tracker.write(pos, arr)
-                print(f"{datetime.now():%H:%M:%S}  {len(pos):4d} buses  {len(arr):4d} new stop arrivals")
-            except Exception as ex:  # keep polling through network blips
-                conn.rollback()
-                print(f"{datetime.now():%H:%M:%S}  error: {ex}")
-            time.sleep(max(1, POLL_SECONDS - (time.time() - started)))
+        poll_loop(conn, tracker)
 
 
 if __name__ == "__main__":

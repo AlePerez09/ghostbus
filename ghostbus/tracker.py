@@ -77,6 +77,18 @@ class Tracker:
         for t in trip_ids:
             self.trips.pop(t, None)
 
+    def prune(self, keep_trip_ids, now: datetime):
+        """Drop cached trips and vehicles we haven't needed lately, so memory stays flat all weekend."""
+        keep = set(keep_trip_ids)
+        for t in [t for t in self.trips if t not in keep]:
+            del self.trips[t]
+        stale = now - timedelta(minutes=30)
+        for v in [v for v, st in self.vehicle_state.items() if st[2] < stale]:
+            del self.vehicle_state[v]
+        old = now - timedelta(hours=3)
+        for k in [k for k, t in self.last_arrival.items() if t < old]:
+            del self.last_arrival[k]
+
     # ── core logic ──────────────────────────────────────────────────────────
     def _passed_seq(self, o: Obs, info, prev_passed):
         """Highest stop_sequence this bus has definitely reached."""
