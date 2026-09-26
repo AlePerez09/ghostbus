@@ -67,14 +67,16 @@ def set_meta(conn, key, value):
 
 
 def load_schedule(allow_sample=True):
-    """Load every county's GTFS. Falls back to the built-in sample only when there's no schedule at all.
-    allow_sample=False (refreshes) keeps the current schedule unless every agency downloads."""
+    """Load every county's GTFS. Counties that download are replaced; the rest keep their current schedule
+    and are retried on the next start or weekly refresh. The built-in sample is used only when there's
+    no schedule at all."""
     try:
-        loaded, failed = load_static.load_all(require_all=not allow_sample)
+        loaded, failed = load_static.load_all(require_all=False)
         if failed:
             log(f"Schedule download failed for {', '.join(failed)}; loaded {', '.join(loaded)}.")
         source = "county"
-        agencies = ",".join(sorted(loaded))
+        with psycopg.connect(DATABASE_URL) as c:        # what's actually in the database now
+            agencies = ",".join(sorted(r[0] for r in c.execute("SELECT DISTINCT agency FROM routes")))
     except Exception as ex:
         if not allow_sample:
             log(f"Schedule refresh failed ({ex}); keeping the current schedule.")

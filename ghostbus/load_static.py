@@ -69,35 +69,58 @@ def load(src: str):
 
 
 def load_all(require_all=False):
-    """Download every agency's schedule, then load them together. Returns (loaded_keys, failed_keys).
-    Downloads happen before anything is deleted, so a dead county website never empties the database.
-    require_all=True (weekly refresh) keeps the current schedule unless every agency downloaded."""
+    """Download every agency's schedule (trying backup URLs), then load the ones that worked.
+    Returns (loaded_keys, failed_keys). Downloads happen before anything is deleted, and only the
+    counties that downloaded are replaced: a dead county website never removes that county's
+    existing schedule or blocks the other counties."""
     feeds, failed = [], []
     for a in AGENCIES:
-        try:
-            feeds.append((a["key"], a["prefix"], open_zip(a["static_url"])))
-        except Exception as ex:
-            print(f"  {a['name']}: download failed ({ex})")
+        z = None
+        for url in a["static_urls"]:
+            try:
+                z = open_zip(url)
+                break
+            except Exception as ex:
+                print(f"  {a['name']}: {url} failed ({ex})")
+        if z is None:
             failed.append(a["key"])
+        else:
+            feeds.append((a["key"], a["prefix"], z))
     if not feeds or (require_all and failed):
         raise RuntimeError("schedule download failed for: " + ", ".join(failed))
     load_feeds(feeds)
     return [k for k, _, _ in feeds], failed
 
 
+# Every table and the column holding its (prefixed) ID, so one county can be replaced on its own.
+_ID_COLUMNS = {"routes": "route_id", "stops": "stop_id", "trips": "trip_id", "stop_times": "trip_id",
+               "calendar": "service_id", "calendar_dates": "service_id", "shapes": "shape_id",
+               "trip_windows": "trip_id"}
+
+
+def _delete_agency(cur, prefix):
+    for table, col in _ID_COLUMNS.items():
+        if prefix:     # e.g. 'bct:' -> every ID starting with it
+            cur.execute(f"DELETE FROM {table} WHERE {col} LIKE %s", (prefix.replace("_", r"\_") + "%",))
+        else:          # Miami-Dade: IDs without any 'xyz:' prefix
+            cur.execute(f"DELETE FROM {table} WHERE {col} !~ '^[a-z]+:'")
+
+
 def load_feeds(feeds):
-    """feeds: list of (agency_key, id_prefix, ZipFile). Everything loads in one transaction."""
+    """feeds: list of (agency_key, id_prefix, ZipFile). Replaces just those agencies, in one transaction
+    (riders keep seeing the old schedule until the new one is fully loaded)."""
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE routes, stops, trips, stop_times, calendar, calendar_dates, shapes, trip_windows")
         for agency, prefix, z in feeds:
             print(f"Loading {agency} ...")
+            _delete_agency(cur, prefix)
             load_one(cur, agency, prefix, z)
         cur.execute("""
             INSERT INTO trip_windows (trip_id, route_id, service_id, direction_id, start_s, end_s, agency)
             SELECT t.trip_id, t.route_id, t.service_id, t.direction_id, min(st.arrival_s), max(st.arrival_s), t.agency
             FROM trips t JOIN stop_times st USING (trip_id)
+            WHERE t.agency = ANY(%s)
             GROUP BY t.trip_id, t.route_id, t.service_id, t.direction_id, t.agency
-        """)
+        """, ([k for k, _, _ in feeds],))
         print(f"  trip_windows: {cur.rowcount:,} rows")
         cur.execute("ANALYZE")
     print("Static GTFS loaded.")

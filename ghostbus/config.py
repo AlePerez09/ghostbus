@@ -34,7 +34,9 @@ def _agency(key, name, prefix, static_url, rt_url="", rt_key="", rt_header="Auth
     env = key.upper()
     return {
         "key": key, "name": name, "prefix": prefix,
-        "static_url": os.environ.get(f"{env}_GTFS_URL", static_url),
+        # One URL or a list of backups, tried in order (agency websites move their files).
+        "static_urls": [os.environ[f"{env}_GTFS_URL"]] if os.environ.get(f"{env}_GTFS_URL")
+                       else (static_url if isinstance(static_url, list) else [static_url]),
         "rt_url": os.environ.get(f"{env}_RT_URL", rt_url),
         "rt_key": os.environ.get(f"{env}_RT_KEY", rt_key),
         "rt_header": os.environ.get(f"{env}_RT_AUTH_HEADER", rt_header),
@@ -44,7 +46,11 @@ def _agency(key, name, prefix, static_url, rt_url="", rt_key="", rt_header="Auth
 AGENCIES = [
     _agency("mdt", "Miami-Dade Transit", "", GTFS_STATIC_URL,
             GTFS_RT_VEHICLES_URL if GTFS_RT_API_KEY else "", GTFS_RT_API_KEY, GTFS_RT_AUTH_HEADER),
-    _agency("bct", "Broward County Transit", "bct:", "https://www.broward.org/bct/documents/google_transit.zip"),
+    _agency("bct", "Broward County Transit", "bct:", [
+        "https://www.broward.org/bct/documents/google_transit.zip",          # official (404 as of Sep 2026)
+        "https://files.mobilitydatabase.org/mdb-330/latest.zip",             # Mobility Database mirror
+        "https://files.mobilitydatabase.org/mdb-330/mdb-330-202606300003/mdb-330-202606300003.zip",
+    ]),
     _agency("pt", "Palm Tran", "pt:", "http://www.palmtran.org/feed/google_transit.zip"),
     _agency("kw", "Key West Transit", "kw:", "http://data.trilliumtransit.com/gtfs/keywest-fl-us/keywest-fl-us.zip"),
 ]
