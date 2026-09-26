@@ -8,6 +8,7 @@ Usage:
     python -m ghostbus.simulate --backfill 4 --live   # ...then keep going in real time
 """
 import argparse
+import zlib
 import random
 import time
 from datetime import datetime, timedelta, timezone
@@ -49,9 +50,11 @@ class Sim:
                     out.append((trip_id, route_id, sec))
         return out
 
-    def delay_for(self, trip_id, route_id, t):
+    def delay_for(self, trip_id, route_id, t, start_s=0):
         if trip_id not in self.trip_delay:
-            ghost = self.rng.random() < GHOST_RATE
+            # Real ghosts aren't random: the same runs go missing day after day (e.g. driver shortages).
+            chronic = zlib.crc32(f"{route_id}-{start_s}".encode()) % 12 == 0
+            ghost = self.rng.random() < (0.4 if chronic else GHOST_RATE / 2)
             self.trip_delay[trip_id] = None if ghost else self.rng.gauss(90, 120)
         d = self.trip_delay[trip_id]
         if d is None:
@@ -87,7 +90,7 @@ class Sim:
             info = tracker.trips.get(trip_id)
             if not info or len(info["stops"]) < 2:
                 continue
-            delay = self.delay_for(trip_id, route_id, t)
+            delay = self.delay_for(trip_id, route_id, t, info["stops"][0][2])
             if delay is None:
                 continue                                   # ghost trip: never appears
             eff = sec - delay                              # where the schedule says we'd be `delay` ago

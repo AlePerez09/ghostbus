@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
-from . import load_static, setup_db
+from . import learn, load_static, setup_db
 from .config import DATABASE_URL, GTFS_RT_API_KEY, GTFS_STATIC_URL, TZ
 from .tracker import Tracker
 
@@ -95,6 +95,7 @@ def bootstrap():
                 setup_db.main()
             for stmt in MIGRATIONS:
                 lock_conn.execute(stmt)
+            learn.migrate(lock_conn)          # history-learning tables + rollups
             routes = lock_conn.execute("SELECT count(*) FROM routes").fetchone()[0]
             if routes == 0:
                 status["phase"] = "loading schedule"
@@ -119,12 +120,35 @@ def schedule_is_stale():
 
 # ── the feed ─────────────────────────────────────────────────────────────────
 _last_schedule_check = [0.0]
+_last_job = {"predictions": 0.0, "outcomes": 0.0}
+
+
+def _run_learning_jobs():
+    """Every 5 min: log fresh predictions and grade old ones. Every 10 min: record which trips never showed.
+    Failures here are logged and never stop the bus feed."""
+    now = time.time()
+    try:
+        if now - _last_job["predictions"] > 300:
+            _last_job["predictions"] = now
+            with psycopg.connect(DATABASE_URL) as c:
+                made = learn.record_predictions(c)
+                graded = learn.resolve_predictions(c)
+            log(f"learning: logged {made} predictions, graded {graded}")
+        if now - _last_job["outcomes"] > 600:
+            first = _last_job["outcomes"] == 0.0
+            _last_job["outcomes"] = now
+            with psycopg.connect(DATABASE_URL) as c:
+                n = learn.record_trip_outcomes(c, lookback_s=86400 if first else 1800)
+            log(f"learning: recorded {n} trip outcomes")
+    except Exception as ex:
+        log(f"learning job failed: {ex}")
 
 
 def _tick(buses, _arrivals):
     status["last_tick"] = datetime.now(timezone.utc).isoformat()
     status["buses"] = buses
     status["error"] = None
+    _run_learning_jobs()
     # Once every 10 minutes: is it 3 AM and is the schedule a week old? Then refresh it.
     if time.time() - _last_schedule_check[0] > 600:
         _last_schedule_check[0] = time.time()

@@ -135,6 +135,17 @@ Before the demo, run `python -m ghostbus.compress_now --older-than 60` so the co
 
 </details>
 
+## How predictions work (in plain words)
+
+1. **We watch the bus:** where it is and how late it's running right now.
+2. **We remember:** how late buses usually are at *your* stop at this hour, learned from every past trip. This is a Tiger Data continuous aggregate of early, typical and late delays per stop, route and hour. The farther away the bus is, the more we lean on that history, because buses drift toward their usual pattern.
+3. **We give a window, not a guess:** "10:57–11:02," narrow when the bus is close and wider when it's far. Your "leave" time aims at the early end, so the bus won't beat you there.
+4. **We flag ghosts before they happen:** every scheduled trip is recorded as showed-up or not (`trip_outcomes`). If a trip missed several recent days, you'll see "Heads up: this trip didn't show up on 3 of the last 7 days."
+
+Every answer carries **one confidence word** (Very likely / Likely / Rough estimate / May not come) and a **"Why?"** in one or two sentences.
+
+**We grade ourselves.** Every 5 minutes the server predicts ahead for a sample of live buses using the same code the app uses (`predictions`), then matches each prediction to the real arrival (`prediction_results`). The Stats tab shows how often buses landed inside our window, rolled up by the `accuracy_hourly` continuous aggregate. Our goal is 80%, and in a backtest on simulated history the windows caught about 90%.
+
 ## Reliability, security and privacy
 
 | Risk | What Ghost Bus does |

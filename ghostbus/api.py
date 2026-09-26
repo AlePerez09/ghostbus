@@ -19,7 +19,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from . import feed
+from . import feed, learn
+from .predict import predict
 from .config import DATABASE_URL, TZ
 
 
@@ -321,22 +322,21 @@ def stops_near(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., g
 @app.get("/api/stops/{stop_id}/leave")
 @cached(10)
 def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
-    """Next buses at a stop, adjusted by each bus's live delay (or the stop's usual lateness)."""
+    """Next buses at a stop with a time window, a one-word confidence and a plain-language 'why'."""
     stop = q("SELECT stop_id, stop_name, lat, lon FROM stops WHERE stop_id = %(s)s", {"s": stop_id})
     if not stop:
         raise HTTPException(404, "Unknown stop")
     now = datetime.now(timezone.utc)
     live_ok = feed_fresh()
-    out = []
+    cands = []
     for d, now_s, midnight in service_clock(now):
         rows = q("""
-            SELECT st.trip_id, st.stop_sequence, st.arrival_s, t.route_id, r.route_short_name, t.headsign,
-                   w.start_s,
-                   live.vehicle_id, live.stop_sequence AS bus_seq, live.time AS bus_time,
+            SELECT st.trip_id, st.stop_sequence, st.arrival_s, t.route_id, t.direction_id, r.route_short_name,
+                   t.headsign, w.start_s,
+                   live.vehicle_id, live.stop_sequence AS bus_seq, cur.arrival_s AS bus_sched_s,
                    ld.delay_s AS live_delay_s,
                    (SELECT 1 FROM stop_arrivals sa WHERE sa.trip_id = st.trip_id AND sa.stop_id = st.stop_id
-                      AND sa.time > now() - interval '3 hours' LIMIT 1) AS already_passed,
-                   hist.p80_delay_s AS usual_p80_delay_s
+                      AND sa.time > now() - interval '3 hours' LIMIT 1) AS already_passed
             FROM stop_times st
             JOIN trips t USING (trip_id)
             JOIN trip_windows w USING (trip_id)
@@ -344,44 +344,81 @@ def leave_now(stop_id: str = ID(), walk_min: int = Query(5, ge=0, le=60)):
             LEFT JOIN LATERAL (SELECT vehicle_id, stop_sequence, time FROM vehicle_positions vp
                                WHERE vp.trip_id = st.trip_id AND vp.time > now() - interval '3 minutes'
                                ORDER BY time DESC LIMIT 1) live ON TRUE
+            LEFT JOIN stop_times cur ON cur.trip_id = st.trip_id AND cur.stop_sequence = live.stop_sequence
             LEFT JOIN LATERAL (SELECT delay_s FROM stop_arrivals sa WHERE sa.trip_id = st.trip_id
                                AND sa.time > now() - interval '3 hours' ORDER BY time DESC LIMIT 1) ld ON TRUE
-            LEFT JOIN LATERAL (SELECT avg(p80_delay_s) AS p80_delay_s FROM stop_delay_hourly h
-                               WHERE h.stop_id = st.stop_id AND h.route_id = t.route_id
-                                 AND h.bucket > now() - interval '14 days'
-                                 AND extract(hour FROM h.bucket AT TIME ZONE %(tz)s)
-                                     = floor(st.arrival_s / 3600.0)::int %% 24) hist ON TRUE
             WHERE st.stop_id = %(stop)s
               AND t.service_id IN (SELECT service_id FROM active_services(%(d)s))
               AND st.arrival_s BETWEEN %(now_s)s - 1800 AND %(now_s)s + 5400
-        """, {"stop": stop_id, "d": d, "now_s": now_s, "tz": str(TZ)})
+        """, {"stop": stop_id, "d": d, "now_s": now_s})
         for r in rows:
-            if r["already_passed"]:
-                continue
-            sched = midnight + timedelta(seconds=r["arrival_s"])
-            if r["vehicle_id"]:
-                delay, basis = (r["live_delay_s"] or 0), "live"
-            elif live_ok and now_s > r["start_s"] + 300:
-                delay, basis = None, "ghost"      # should be on the road by now but isn't reporting
-            else:
-                delay, basis = (r["usual_p80_delay_s"] or 0), "history" if r["usual_p80_delay_s"] else "schedule"
-            if delay is None:
-                eta = None
-            else:
-                eta = sched + timedelta(seconds=delay)
-                if eta < now - timedelta(minutes=1):
-                    continue
-            out.append({
-                "route_id": r["route_id"], "route_short_name": r["route_short_name"], "headsign": r["headsign"],
-                "trip_id": r["trip_id"], "scheduled": sched, "eta": eta, "basis": basis,
-                "delay_min": round(delay / 60, 1) if delay is not None else None,
-                "leave_at": eta - timedelta(minutes=walk_min) if eta else None,
-                "stops_away": (r["stop_sequence"] - r["bus_seq"]) if r["bus_seq"] is not None else None,
-            })
+            if not r["already_passed"]:
+                cands.append((r, midnight + timedelta(seconds=r["arrival_s"]), now_s))
+
+    profs = learn.profiles(q, [(stop_id, r["route_id"], learn.local_hour(sched)) for r, sched, _ in cands])
+    ghosts = learn.ghost_risks(q, [(r["route_id"], r["direction_id"], r["start_s"]) for r, _, _ in cands])
+    out = []
+    for r, sched, now_s in cands:
+        is_live = bool(r["vehicle_id"]) and live_ok
+        days = ghosts.get((r["route_id"], r["direction_id"], r["start_s"]))
+        stops_away = (r["stop_sequence"] - r["bus_seq"]) if is_live and r["bus_seq"] is not None else None
+        mins_away = ((r["arrival_s"] - r["bus_sched_s"]) / 60) if is_live and r["bus_sched_s"] is not None else None
+        missing = live_ok and not r["vehicle_id"] and now_s > r["start_s"] + 300
+        p = predict(live=is_live, current_delay_s=r["live_delay_s"] if is_live else None,
+                    minutes_away=mins_away, stops_away=stops_away,
+                    profile=profs.get((stop_id, r["route_id"], learn.local_hour(sched))),
+                    ghost_risk=learn.risk_from(days), ghost_days=days, started=now_s > r["start_s"])
+        why, confidence = list(p.why), p.confidence
+        if missing:
+            late_by = round((now_s - r["start_s"]) / 60)
+            confidence = "may not come"
+            why = [f"This bus should have started its trip {late_by} min ago but hasn't sent a signal. "
+                   f"It may be a ghost bus."] + [w for w in why if w.startswith("Heads up")]
+        lo, eta, hi = (sched + timedelta(seconds=x) for x in (p.lo_s, p.delay_s, p.hi_s))
+        if hi < now - timedelta(minutes=1):
+            continue
+        out.append({
+            "route_id": r["route_id"], "route_short_name": r["route_short_name"], "headsign": r["headsign"],
+            "trip_id": r["trip_id"], "scheduled": sched, "eta": None if missing else eta,
+            "window": None if missing else [max(lo, now), hi],
+            "confidence": confidence, "why": why, "live": is_live, "stops_away": stops_away,
+            "ghost_risk": learn.risk_from(days),
+            "leave_at": None if missing else max(lo, now) - timedelta(minutes=walk_min),
+            # kept for older app versions
+            "basis": "ghost" if missing else ("live" if is_live else ("history" if profs else "schedule")),
+            "delay_min": None if missing else round(p.delay_s / 60, 1),
+        })
     out.sort(key=lambda x: x["eta"] or x["scheduled"])
-    catchable = [x for x in out if x["leave_at"] and x["leave_at"] >= now]
+    catchable = [x for x in out if x["leave_at"] and x["leave_at"] >= now and x["confidence"] != "may not come"]
+    rec = catchable[0] if catchable else None
+    backup = catchable[1] if len(catchable) > 1 else None
     return {"stop": stop[0], "now": now, "walk_min": walk_min, "live_ok": live_ok,
-            "recommendation": catchable[0] if catchable else None, "arrivals": out[:12]}
+            "recommendation": rec, "backup": backup, "arrivals": out[:12],
+            "leave_rule": "We time your walk for the early end of the window, so the bus won't beat you there."}
+
+
+@app.get("/api/accuracy")
+@cached(120)
+def accuracy(days: int = Query(7, ge=1, le=30), route_id: str | None = Query(None, max_length=64)):
+    """How often our live predictions were right, by how far ahead they were made."""
+    rows = q("""
+        SELECT horizon_band, sum(n)::int AS n, sum(within_2min)::int AS within_2min,
+               sum(in_window)::int AS in_window, sum(avg_abs_error_s * n) / nullif(sum(n), 0) AS avg_abs_error_s
+        FROM accuracy_hourly
+        WHERE bucket > now() - make_interval(days => %(d)s) AND live
+          AND (%(r)s::text IS NULL OR route_id = %(r)s)
+        GROUP BY horizon_band ORDER BY horizon_band
+    """, {"d": days, "r": route_id})
+    label = {5: "up to 5 min ahead", 10: "5–10 min ahead", 20: "10–20 min ahead", 30: "20+ min ahead"}
+    bands = [{"band": r["horizon_band"], "label": label.get(r["horizon_band"], ""), "n": r["n"],
+              "within_2min_pct": round(100 * r["within_2min"] / r["n"]) if r["n"] else None,
+              "in_window_pct": round(100 * r["in_window"] / r["n"]) if r["n"] else None,
+              "avg_error_min": round(r["avg_abs_error_s"] / 60, 1) if r["avg_abs_error_s"] is not None else None}
+             for r in rows]
+    total = sum(b["n"] for b in bands)
+    in_win = sum((b["in_window_pct"] or 0) * b["n"] for b in bands) / total if total else None
+    return {"days": days, "graded": total, "in_window_pct": round(in_win) if in_win is not None else None,
+            "bands": bands, "goal_in_window_pct": 80}
 
 
 # ── Under the hood: Tiger Data stats for the demo ────────────────────────────────

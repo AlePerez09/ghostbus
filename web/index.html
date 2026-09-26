@@ -103,6 +103,25 @@
   body.sheet-mini #locate { bottom: 132px; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
   .leaflet-control-attribution { font-size: 10px; }
+  .chip-conf { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+               color: var(--text); background: color-mix(in srgb, var(--c) 22%, transparent); border: 1px solid color-mix(in srgb, var(--c) 60%, transparent); white-space: nowrap; }
+  .tl { position: relative; margin: 14px 0 4px; padding-top: 18px; }
+  .tl-track { position: relative; height: 10px; border-radius: 5px; background: var(--surface-3); }
+  .tl-win { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 5px; opacity: .85; }
+  .tl-leave { position: absolute; top: -4px; width: 3px; height: 18px; background: var(--text); border-radius: 2px; transform: translateX(-1px); }
+  .tl-win-label { position: absolute; top: 0; font-size: 11px; color: var(--text-2); white-space: nowrap; }
+  .tl-labels { position: relative; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 5px; height: 16px; }
+  .tl-leave-label { position: absolute; transform: translateX(-50%); color: var(--text); font-weight: 600; white-space: nowrap; }
+  details.why { margin-top: 10px; }
+  details.why summary, details.arr summary { cursor: pointer; color: var(--accent); font-weight: 600; list-style: none; }
+  details.why ul, details.arr ul { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 14px; }
+  details.why li, details.arr li { margin: 4px 0; }
+  details.arr { border-bottom: 1px solid var(--line); padding: 9px 0; }
+  details.arr summary { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 400; }
+  details.arr summary::-webkit-details-marker, details.why summary::-webkit-details-marker { display: none; }
+  ol.how { padding-left: 20px; color: var(--text-2); font-size: 14px; } ol.how li { margin: 6px 0; } ol.how b { color: var(--text); }
+  .accrow { display: grid; grid-template-columns: 120px 1fr 40px; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--text-2); }
+  .accrow .bar { margin-top: 0; }
   .me { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(57,135,229,.25); }
 </style>
 </head>
@@ -151,6 +170,6 @@
 </section>
 <div class="hovertip" id="hovertip"></div>
 
-<script src="/static/app.js?v=4" defer></script>
+<script src="/static/app.js?v=5" defer></script>
 </body>
 </html>

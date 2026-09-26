@@ -28,6 +28,34 @@ function delayText(s) {
   if (m < 1) return 'on time';
   return s < 0 ? `${m} min early` : `${m} min late`;
 }
+const CONF = {
+  'very likely':  { label: 'Very likely',    icon: '✓', color: '--good' },
+  'likely':       { label: 'Likely',         icon: '●', color: '--accent' },
+  'rough':        { label: 'Rough estimate', icon: '~', color: '--muted' },
+  'may not come': { label: 'May not come',   icon: '👻', color: '--critical' },
+};
+function chip(conf) {
+  const c = CONF[conf] || CONF.rough;
+  return `<span class="chip-conf" style="--c:var(${c.color})"><span aria-hidden="true">${c.icon}</span>${c.label}</span>`;
+}
+// "10:56–11:02 AM" instead of "10:56 AM–11:02 AM": fewer characters, same meaning.
+function fmtRange(a, b) {
+  const x = fmtTime(a), y = fmtTime(b), sx = x.split(' '), sy = y.split(' ');
+  return sx.length === 2 && sx[1] === sy[1] ? `${sx[0]}–${y}` : `${x}–${y}`;
+}
+const windowText = a => a.window ? fmtRange(a.window[0], a.window[1]) : `was due ${fmtTime(a.scheduled)}`;
+// A simple picture of the next few minutes: now → leave → the window when the bus should arrive.
+function timeline(r) {
+  const now = Date.now(), leave = +new Date(r.leave_at), lo = +new Date(r.window[0]), hi = +new Date(r.window[1]);
+  const end = hi + 2 * 60000, pct = t => Math.max(0, Math.min(100, (t - now) / (end - now) * 100));
+  const lp = pct(leave), a = pct(lo), b = pct(hi);
+  return `<div class="tl" role="img" aria-label="Leave at ${fmtTime(leave)}; bus arrives between ${fmtTime(lo)} and ${fmtTime(hi)}">
+    <div class="tl-win-label" style="left:${a}%;width:${Math.max(b - a, 18)}%">Bus arrives</div>
+    <div class="tl-track"><div class="tl-win" style="left:${a}%;width:${Math.max(b - a, 2)}%"></div>
+      <div class="tl-leave" style="left:${lp}%"></div></div>
+    <div class="tl-labels"><span>Now</span><span class="tl-leave-label" style="left:${lp}%">Leave ${fmtTime(leave)}</span><span>${fmtTime(hi)}</span></div>
+  </div>`;
+}
 const BASIS = { live: 'tracking the bus live', history: 'bus not out yet · padded for usual delays', schedule: 'schedule only', ghost: 'not reporting' };
 
 // ───────────────────────── map ─────────────────────────
@@ -159,10 +187,11 @@ function stopRow(stop, leave, walk) {
   let right = '<span class="muted">No bus soon</span>';
   if (r) {
     const m = minsFromNow(r.leave_at);
-    right = `<div class="big ${m <= 0 ? 'go' : ''}">${m <= 0 ? 'Go now' : m + ' min'}</div><div class="muted">leave · route ${esc(r.route_short_name || r.route_id)}</div>`;
+    right = `<div class="big ${m <= 0 ? 'go' : ''}">${m <= 0 ? 'Go now' : 'Leave in ' + m + ' min'}</div>
+      <div class="muted">${esc(r.route_short_name || r.route_id)} · ${windowText(r)}</div>${chip(r.confidence)}`;
   }
   const dist = walk != null ? `${walk} min walk · ` : '';
-  const nextBuses = leave ? leave.arrivals.filter(a => a.eta).slice(0, 3).map(a => `<span class="badge" style="min-width:0;font-size:12px">${esc(a.route_short_name || a.route_id)} ${fmtTime(a.eta)}</span>`).join(' ') : '';
+  const nextBuses = '';
   return `<div class="row" data-stop="${esc(stop.stop_id)}">
     <div class="grow"><div class="ellipsis">${esc(stop.stop_name)}</div>
       <div class="sub">${dist}stop ${esc(stop.stop_id)}</div>
@@ -218,16 +247,22 @@ async function openStop(id, focus = true) {
   if (d.live_ok === false) html += '<div class="warn">Live bus tracking is delayed right now. These are scheduled times, padded for usual delays.</div>';
   if (r) {
     const m = minsFromNow(r.leave_at);
-    html += `<div class="card rec"><div class="sub">${m <= 0 ? 'Leave' : 'Leave in'}</div>
+    html += `<div class="card rec">
+      <div class="sub">${m <= 0 ? 'Leave' : 'Leave in'}</div>
       <div class="huge ${m <= 0 ? 'go' : ''}">${m <= 0 ? 'Now!' : m + ' min'}</div>
-      <div style="margin-top:4px">to catch route <b>${esc(r.route_short_name || r.route_id)}</b> at <b>${fmtTime(r.eta)}</b>
-      ${r.delay_min ? `<span class="sub">(${delayText(r.delay_min * 60)})</span>` : ''}</div>
-      <div class="tag" style="margin-top:6px"><span class="dot" style="background:${r.basis === 'live' ? css('--good') : css('--muted')}"></span>${BASIS[r.basis]}${r.stops_away != null ? ` · ${r.stops_away} stops away` : ''}</div></div>`;
+      <div style="margin:4px 0 8px">to catch the <b>${esc(r.route_short_name || r.route_id)}</b>, arriving <b>${windowText(r)}</b></div>
+      ${chip(r.confidence)}
+      ${timeline(r)}
+      <details class="why"><summary>Why?</summary>
+        <ul>${r.why.map(w => `<li>${esc(w)}</li>`).join('')}<li>${esc(d.leave_rule)}</li></ul></details>
+      ${d.backup ? `<div class="sub" style="margin-top:8px">Miss it? Next: <b>${esc(d.backup.route_short_name || d.backup.route_id)}</b> at ${windowText(d.backup)}</div>` : ''}
+    </div>`;
   } else html += '<div class="card">No catchable bus in the next 90 minutes.</div>';
-  html += '<h3>Next buses</h3><table class="t">' + (d.arrivals.map(a => `<tr>
-      <td style="width:60px"><span class="badge">${esc(a.route_short_name || a.route_id)}</span></td>
-      <td class="sub">${a.basis === 'ghost' ? '<span style="color:var(--critical)">👻 not reporting</span>' : esc(BASIS[a.basis])}${a.delay_min && a.basis === 'live' ? ` · ${delayText(a.delay_min * 60)}` : ''}</td>
-      <td>${a.eta ? fmtTime(a.eta) : '<s class="muted">' + fmtTime(a.scheduled) + '</s>'}</td></tr>`).join('') || '<tr><td class="empty">No buses scheduled soon.</td></tr>') + '</table>';
+  html += '<h3>Next buses</h3>' + (d.arrivals.map((a, i) => `
+    <details class="arr"><summary>
+      <span class="badge">${esc(a.route_short_name || a.route_id)}</span>
+      <span class="grow">${windowText(a)}</span>${chip(a.confidence)}</summary>
+      <ul>${a.why.map(w => `<li>${esc(w)}</li>`).join('')}</ul></details>`).join('') || '<div class="empty">No buses scheduled soon.</div>');
   $('#p-stop').innerHTML = html;
   $('#stop-back').onclick = () => { openStopId = null; stopLayer.clearLayers(); showTab('near'); };
   $('#star').onclick = () => { toggleSaved(d.stop, walk); openStop(id, false); };
@@ -313,9 +348,28 @@ document.addEventListener('pointermove', e => {
 
 // ───────────────────────── stats (Tiger Data) ─────────────────────────
 async function refreshStats() {
-  const t = await api('/api/tiger');
+  const [t, acc] = await Promise.all([api('/api/tiger'), api('/api/accuracy?days=7').catch(() => null)]);
   const n = x => x == null ? '—' : Number(x).toLocaleString();
-  let html = '<div class="sub">Everything runs on one Tiger Data (PostgreSQL + TimescaleDB) database: schedule tables and GPS time series side by side.</div>';
+  let html = `<h3 style="margin-top:4px">How Ghost Bus predicts</h3>
+    <ol class="how">
+      <li><b>We watch the bus.</b> Where it is and how late it's running right now.</li>
+      <li><b>We remember.</b> How late buses usually are at your stop at this hour, learned from every past trip.</li>
+      <li><b>We give you a window, not a guess.</b> Narrow when the bus is close, wider when it's far away, and we time your walk for the early end so the bus won't beat you there.</li>
+    </ol>
+    <h3>How often are we right?</h3>`;
+  if (acc && acc.graded >= 30) {
+    html += `<div class="card"><div class="big" style="font-size:34px">${acc.in_window_pct}%</div>
+      <div class="sub">of buses arrived inside our window over the last ${acc.days} days
+      (${n(acc.graded)} predictions checked · goal ${acc.goal_in_window_pct}%)</div>
+      ${acc.bands.map(b => `<div class="accrow"><span>${esc(b.label)}</span>
+        <div class="bar"><i style="width:${b.in_window_pct}%"></i></div>
+        <span class="big" style="font-size:14px">${b.in_window_pct}%</span></div>
+        <div class="muted" style="margin:-2px 0 8px">Off by ${b.avg_error_min} min on average</div>`).join('')}
+      <div class="muted">We check ourselves automatically: every few minutes we record predictions, then compare them with when the bus really arrived.</div></div>`;
+  } else {
+    html += `<div class="card sub">We grade our own predictions against real arrivals. ${acc && acc.graded ? `${acc.graded} checked so far;` : ''} results appear once we've checked at least 30.</div>`;
+  }
+  html += '<h3>Under the hood</h3><div class="sub">Everything runs on one Tiger Data (PostgreSQL + TimescaleDB) database: schedule tables and GPS time series side by side.</div>';
   for (const [name, s] of Object.entries(t.hypertables)) {
     html += `<h3>${name} <span class="muted">hypertable</span></h3><table class="t">
       <tr><td>Rows</td><td>${n(s.rows)}</td></tr>
