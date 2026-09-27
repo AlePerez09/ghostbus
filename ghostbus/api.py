@@ -337,6 +337,53 @@ def miami_address(q: str) -> str:
     return re.sub(rf"\b(\d+)\s+{_STREET}\b", ordinal, q, flags=re.IGNORECASE)
 
 
+_GEO_UA = {"User-Agent": "GhostBus/1.0 (+https://github.com/AlePerez09/ghostbus)"}
+
+
+def _nominatim(requests, q_):
+    resp = requests.get("https://nominatim.openstreetmap.org/search", timeout=8, headers=_GEO_UA, params={
+        "q": q_, "format": "jsonv2", "limit": 5, "countrycodes": "us",
+        "viewbox": SOUTH_FL_VIEWBOX, "bounded": 1, "addressdetails": 0,
+    })
+    resp.raise_for_status()
+    out = []
+    for r in resp.json():
+        parts = [p.strip() for p in r.get("display_name", "").split(",")]
+        for i in range(len(parts) - 1):          # "11200, Southwest 8th Street" -> "11200 Southwest 8th Street"
+            if parts[i].isdigit():
+                parts[i:i + 2] = [f"{parts[i]} {parts[i + 1]}"]
+                break
+        out.append({"label": ", ".join(parts[:3]), "detail": ", ".join(parts[3:5]),
+                    "lat": float(r["lat"]), "lon": float(r["lon"])})
+    return out
+
+
+def _photon(requests, q_):
+    """Backup: Photon, a free OpenStreetMap search run by Komoot (no key needed)."""
+    lon1, lat1, lon2, lat2 = (float(v) for v in SOUTH_FL_VIEWBOX.split(","))
+    resp = requests.get("https://photon.komoot.io/api/", timeout=8, headers=_GEO_UA, params={
+        "q": q_, "limit": 5, "lang": "en",
+        "bbox": f"{min(lon1, lon2)},{min(lat1, lat2)},{max(lon1, lon2)},{max(lat1, lat2)}",
+    })
+    resp.raise_for_status()
+    out, seen = [], set()
+    for f in resp.json().get("features", []):
+        p = f.get("properties", {})
+        lon, lat = f["geometry"]["coordinates"][:2]
+        if p.get("housenumber") and p.get("street"):
+            label = f"{p['housenumber']} {p['street']}"
+        else:
+            label = ", ".join(x for x in (p.get("name"), p.get("street")) if x)
+        city = p.get("city") or p.get("county") or ""
+        if not label or (label, city) in seen:       # skip blanks and repeats of the same address
+            continue
+        seen.add((label, city))
+        out.append({"label": ", ".join(x for x in (label, city) if x),
+                    "detail": ", ".join(x for x in (p.get("state"), p.get("postcode")) if x),
+                    "lat": float(lat), "lon": float(lon)})
+    return out
+
+
 @app.get("/api/geocode")
 def geocode(q_: str = Query(..., alias="q", min_length=3, max_length=120)):
     import requests
@@ -350,24 +397,15 @@ def geocode(q_: str = Query(..., alias="q", min_length=3, max_length=120)):
         if wait > 0:
             time.sleep(wait)
         _geo_last[0] = time.time()
-        try:
-            resp = requests.get("https://nominatim.openstreetmap.org/search", timeout=8, params={
-                "q": q_, "format": "jsonv2", "limit": 5, "countrycodes": "us",
-                "viewbox": SOUTH_FL_VIEWBOX, "bounded": 1, "addressdetails": 0,
-            }, headers={"User-Agent": "GhostBus/1.0 (+https://github.com/AlePerez09/ghostbus)"})
-            resp.raise_for_status()
-            raw = resp.json()
-        except Exception:
-            raise HTTPException(503, "Address search is busy right now. Try again in a moment.")
-    out = []
-    for r in raw:
-        parts = [p.strip() for p in r.get("display_name", "").split(",")]
-        for i in range(len(parts) - 1):          # "11200, Southwest 8th Street" -> "11200 Southwest 8th Street"
-            if parts[i].isdigit():
-                parts[i:i + 2] = [f"{parts[i]} {parts[i + 1]}"]
+        out = None
+        for name, lookup in (("OpenStreetMap", _nominatim), ("Photon", _photon)):
+            try:
+                out = lookup(requests, q_)
                 break
-        out.append({"label": ", ".join(parts[:3]), "detail": ", ".join(parts[3:5]),
-                    "lat": float(r["lat"]), "lon": float(r["lon"])})
+            except Exception as ex:          # blocked, rate-limited or down: try the backup service
+                print(f"geocode: {name} failed ({type(ex).__name__}: {str(ex)[:120]})", flush=True)
+        if out is None:
+            raise HTTPException(503, "Address search is busy right now. Try again in a moment.")
     if len(_geo_cache) > 5000:
         _geo_cache.clear()
     _geo_cache[key] = (time.time(), out)

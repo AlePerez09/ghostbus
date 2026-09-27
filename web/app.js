@@ -12,10 +12,10 @@ let lastOk = 0, offline = false;
 async function api(p) {
   try {
     const r = await fetch(p);
-    if (!r.ok) throw new Error(r.status);
-    lastOk = Date.now(); offline = false;
+    lastOk = Date.now(); offline = false;          // the server answered, so we're online
+    if (!r.ok) throw Object.assign(new Error(r.status), { http: r.status });
     return r.json();
-  } catch (e) { offline = true; renderStatus(); throw e; }
+  } catch (e) { if (!e.http) { offline = true; renderStatus(); } throw e; }   // only a failed connection means offline
 }
 function delayColor(s) {
   if (s == null) return css('--muted');
